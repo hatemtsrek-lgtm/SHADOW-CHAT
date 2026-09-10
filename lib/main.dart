@@ -2199,8 +2199,6 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> {
   final TextEditingController _contactIdController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
-  List<Contact> _phoneContacts = [];
-  bool _loadingPhoneContacts = false;
 
   @override
   void dispose() {
@@ -2374,56 +2372,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
     }
   }
 
-  Future<void> _loadPhoneContacts() async {
-    if (kIsWeb) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('جهات اتصال الهاتف متاحة على Android فقط'),
-        ),
-      );
-      return;
-    }
-    setState(() => _loadingPhoneContacts = true);
-    try {
-      final permissionGranted = await FlutterContacts.permissions.has(
-        PermissionType.read,
-      );
-      if (!permissionGranted) {
-        final granted = await FlutterContacts.permissions.request(
-          PermissionType.read,
-        );
-        if (granted != PermissionStatus.granted) {
-          if (mounted) {
-            setState(() => _phoneContacts = const []);
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'تم رفض صلاحية جهات الاتصال. يمكنك الإضافة يدويًا باستخدام المعرّف.',
-                ),
-              ),
-            );
-          }
-          return;
-        }
-      }
-
-      final contacts = await FlutterContacts.getAll(
-        properties: {ContactProperty.phone},
-      );
-      if (mounted) setState(() => _phoneContacts = contacts);
-    } catch (error) {
-      debugPrint('Phone contacts load error: $error');
-      if (mounted) {
-        setState(() => _phoneContacts = const []);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تعذر قراءة جهات اتصال الهاتف')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _loadingPhoneContacts = false);
-    }
-  }
-
   String _normalizePhone(String phone) {
     final arabicDigits = '٠١٢٣٤٥٦٧٨٩';
     var normalized = phone;
@@ -2435,79 +2383,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   String _phoneMatchKey(String phone) {
     return _phoneSearchKey(phone);
-  }
-
-  Future<void> _addPhoneContact(Contact contact) async {
-    final phone = contact.phones.isEmpty
-        ? ''
-        : _normalizePhone(contact.phones.first.number);
-    final user = FirebaseAuth.instance.currentUser;
-    if (phone.isEmpty) return;
-    if (!firebaseReady || user == null) {
-      final targetUid = 'local_contact_${DateTime.now().millisecondsSinceEpoch}';
-      await _saveContactRelationship(
-        targetUid: targetUid,
-        displayName: (contact.displayName ?? '').isEmpty
-            ? 'جهة اتصال محلية'
-            : contact.displayName ?? 'جهة اتصال محلية',
-        publicId: targetUid,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تمت إضافة جهة الاتصال محليًا')),
-        );
-      }
-      return;
-    }
-    try {
-      final phoneKey = _phoneMatchKey(phone);
-        final usersSnapshot = await FirebaseFirestore.instance
-          .collection('publicProfiles')
-          .where('phoneSearchKey', isEqualTo: phoneKey)
-          .limit(1)
-          .get()
-          .timeout(const Duration(seconds: 12));
-      QueryDocumentSnapshot<Map<String, dynamic>>? matchingUser;
-      for (final candidate in usersSnapshot.docs) {
-        final storedPhone = candidate.data()['phoneNumber'];
-        if (storedPhone is String &&
-            storedPhone.isNotEmpty &&
-            _phoneMatchKey(storedPhone) == phoneKey) {
-          matchingUser = candidate;
-          break;
-        }
-      }
-      if (matchingUser == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'لم يتم العثور على حساب مرتبط بهذا الرقم. استخدم المعرّف السهل إذا كان الحساب Anonymous.',
-              ),
-            ),
-          );
-        }
-        return;
-      }
-      final contactId = matchingUser.id;
-      if (contactId == user.uid) return;
-
-      await _saveContactRelationship(
-        targetUid: contactId,
-        displayName: (contact.displayName ?? '').isEmpty
-            ? 'جهة اتصال'
-            : contact.displayName ?? 'جهة اتصال',
-        publicId: matchingUser.data()['publicId'] ?? contactId,
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('تمت إضافة جهة الاتصال')));
-      }
-    } catch (error) {
-      debugPrint('Phone contact save error: $error');
-    }
   }
 
   Future<void> _addAppUserByTap(String targetUid, String publicId, String displayName) async {
@@ -2584,48 +2459,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
                       },
                     ),
                   const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: _loadingPhoneContacts
-                          ? null
-                          : _loadPhoneContacts,
-                      icon: _loadingPhoneContacts
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.contacts_outlined),
-                      label: const Text('اختيار من جهات اتصال الهاتف'),
-                    ),
-                  ),
-                  if (_phoneContacts.isNotEmpty)
-                    SizedBox(
-                      height: 180,
-                      child: ListView.builder(
-                        itemCount: _phoneContacts.length,
-                        itemBuilder: (context, index) {
-                          final contact = _phoneContacts[index];
-                          return ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.person_outline),
-                            title: Text(contact.displayName ?? 'جهة اتصال'),
-                            subtitle: Text(
-                              contact.phones.isEmpty
-                                  ? 'لا يوجد رقم'
-                                  : contact.phones.first.number,
-                            ),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.person_add_alt_1),
-                              onPressed: contact.phones.isEmpty
-                                  ? null
-                                  : () => _addPhoneContact(contact),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
                   if (firebaseReady)
                     StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                       stream: FirebaseFirestore.instance
@@ -2689,8 +2522,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     controller: _contactIdController,
                     style: const TextStyle(color: Colors.white),
                     decoration: const InputDecoration(
-                      labelText: 'المعرّف السهل أو رقم الهاتف الدولي',
-                      hintText: 'SC-A1B2C3 أو +201xxxxxxxxx',
+                      labelText: 'المعرّف السهل',
+                      hintText: 'SC-A1B2C3',
                       prefixIcon: Icon(Icons.badge_outlined),
                     ),
                   ),
