@@ -413,18 +413,11 @@ Future<void> deleteOwnChatMessages(String chatId) async {
         .collection('messages')
         .where('uid', isEqualTo: user.uid)
         .get();
-    var batch = FirebaseFirestore.instance.batch();
-    var operationCount = 0;
+    final batch = FirebaseFirestore.instance.batch();
     for (final message in snapshot.docs) {
       batch.delete(message.reference);
-      operationCount++;
-      if (operationCount == 450) {
-        await batch.commit();
-        batch = FirebaseFirestore.instance.batch();
-        operationCount = 0;
-      }
     }
-    if (operationCount > 0) await batch.commit();
+    await batch.commit();
   } catch (error) {
     debugPrint('Chat history delete error: $error');
   }
@@ -475,18 +468,11 @@ Future<void> deleteExpiredOwnChatMessages(String chatId) async {
         .where('uid', isEqualTo: user.uid)
         .where('expiresAt', isLessThanOrEqualTo: Timestamp.now())
         .get();
-    var batch = FirebaseFirestore.instance.batch();
-    var operationCount = 0;
+    final batch = FirebaseFirestore.instance.batch();
     for (final message in snapshot.docs) {
       batch.delete(message.reference);
-      operationCount++;
-      if (operationCount == 450) {
-        await batch.commit();
-        batch = FirebaseFirestore.instance.batch();
-        operationCount = 0;
-      }
     }
-    if (operationCount > 0) await batch.commit();
+    await batch.commit();
   } catch (error) {
     debugPrint('Expired chat message delete error: $error');
   }
@@ -927,43 +913,24 @@ Future<void> main() async {
 Future<void> ensureUserProfile() async {
   final user = FirebaseAuth.instance.currentUser;
   if (user == null) return;
-  final fallbackPublicId =
-    'SC-${user.uid.substring(0, 6).toUpperCase()}';
-  currentPublicUserId = fallbackPublicId;
-  publicUserIdNotifier.value = fallbackPublicId;
-
   final profileRef = FirebaseFirestore.instance
       .collection('users')
       .doc(user.uid);
-  DocumentSnapshot<Map<String, dynamic>>? profile;
-  var profileReadSucceeded = false;
-  try {
-    profile = await profileRef.get().timeout(const Duration(seconds: 10));
-    profileReadSucceeded = true;
-  } catch (error) {
-    debugPrint('User profile read failed: $error');
-  }
-  final storedPublicId = profile?.data()?['publicId'];
-  final publicId = storedPublicId is String && storedPublicId.isNotEmpty
-    ? storedPublicId
-    : fallbackPublicId;
+  final profile = await profileRef.get();
+  final publicId =
+      profile.data()?['publicId'] as String? ??
+      'SC-${user.uid.substring(0, 6).toUpperCase()}';
   currentPublicUserId = publicId;
   publicUserIdNotifier.value = publicId;
-  if (profileReadSucceeded) {
-    try {
-      await profileRef.set({
-        'publicId': publicId,
-        'displayName': profile?.data()?['displayName'] ?? 'Shadow User',
-        if (user.phoneNumber != null)
-          'phoneNumber': normalizePhoneNumber(user.phoneNumber!),
-        if (user.phoneNumber != null)
-          'phoneSearchKey': _phoneSearchKey(user.phoneNumber!),
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
-    } catch (error) {
-      debugPrint('User profile sync failed: $error');
-    }
-  }
+  await profileRef.set({
+    'publicId': publicId,
+    'displayName': profile.data()?['displayName'] ?? 'Shadow User',
+    if (user.phoneNumber != null)
+      'phoneNumber': _normalizePhoneNumber(user.phoneNumber!),
+    if (user.phoneNumber != null)
+      'phoneSearchKey': _phoneSearchKey(user.phoneNumber!),
+    'updatedAt': FieldValue.serverTimestamp(),
+  }, SetOptions(merge: true));
 
   // تعيين owner للغرفة السرية والمجموعة السرية تلقائياً
   try {
@@ -983,15 +950,11 @@ Future<void> ensureUserProfile() async {
   }
 }
 
-String normalizePhoneNumber(String phone) =>
-    phone
-        .replaceAllMapped(RegExp(r'[٠-٩]'), (match) {
-          return '٠١٢٣٤٥٦٧٨٩'.indexOf(match.group(0)!).toString();
-        })
-        .replaceAll(RegExp(r'[^0-9+]'), '');
+String _normalizePhoneNumber(String phone) =>
+    phone.replaceAll(RegExp(r'[^0-9+]'), '');
 
 String _phoneSearchKey(String phone) {
-  final normalized = normalizePhoneNumber(phone).replaceFirst(
+  final normalized = _normalizePhoneNumber(phone).replaceFirst(
     RegExp(r'^\+'),
   );
   return normalized.length > 10
@@ -2215,59 +2178,34 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   Future<void> _addContact() async {
-    final input = _contactIdController.text.trim();
-    final String publicId = input.toUpperCase();
+    final String publicId = _contactIdController.text.trim().toUpperCase();
     final String name = _nameController.text.trim();
     final User? user = FirebaseAuth.instance.currentUser;
     if (!firebaseReady ||
         user == null ||
-        input.isEmpty)
+        publicId.isEmpty ||
+        publicId == currentPublicUserId)
       return;
     try {
-      QuerySnapshot<Map<String, dynamic>> matchingUsers;
-      if (input.startsWith('+') || RegExp(r'^[0-9٠-٩ ()-]+$').hasMatch(input)) {
-        final phoneKey = _phoneMatchKey(input);
-        matchingUsers = await FirebaseFirestore.instance
-            .collection('users')
-            .where('phoneSearchKey', isEqualTo: phoneKey)
-            .limit(1)
-            .get()
-            .timeout(const Duration(seconds: 12));
-      } else {
-        matchingUsers = await FirebaseFirestore.instance
-            .collection('users')
-            .where('publicId', isEqualTo: publicId)
-            .limit(1)
-            .get()
-            .timeout(const Duration(seconds: 12));
-      }
+      final matchingUsers = await FirebaseFirestore.instance
+          .collection('users')
+          .where('publicId', isEqualTo: publicId)
+          .limit(1)
+          .get()
+          .timeout(const Duration(seconds: 12));
       if (matchingUsers.docs.isEmpty) {
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('لم يتم العثور على حساب بهذا المعرّف أو الرقم'),
-            ),
+            const SnackBar(content: Text('المعرّف غير موجود في Firebase')),
           );
         return;
       }
 
       final targetUid = matchingUsers.docs.first.id;
-      if (targetUid == user.uid) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('لا يمكنك إضافة حسابك كجهة اتصال')),
-          );
-        }
-        return;
-      }
       await _saveContactRelationship(
         targetUid: targetUid,
-        displayName: name.isEmpty
-            ? (matchingUsers.docs.first.data()['displayName'] as String? ??
-                'جهة اتصال')
-            : name,
-        publicId: matchingUsers.docs.first.data()['publicId'] as String? ??
-            targetUid,
+        displayName: name,
+        publicId: publicId,
       );
 
       _contactIdController.clear();
@@ -2492,8 +2430,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     controller: _contactIdController,
                     style: const TextStyle(color: Colors.white),
                     decoration: const InputDecoration(
-                      labelText: 'المعرّف السهل أو رقم الهاتف الدولي',
-                      hintText: 'SC-A1B2C3 أو +201xxxxxxxxx',
+                      labelText: 'المعرّف السهل مثل SC-A1B2C3',
                       prefixIcon: Icon(Icons.badge_outlined),
                     ),
                   ),
@@ -2626,7 +2563,6 @@ class _SecretRoomScreenState extends State<SecretRoomScreen>
   void dispose() {
     _codeController.dispose();
     _pulseController.dispose();
-    super.dispose();
   }
 
   @override
@@ -3233,7 +3169,6 @@ class _SecretChatScreenState extends State<SecretChatScreen>
   final TextEditingController _passController = TextEditingController();
   final TextEditingController _messageController = TextEditingController();
   final AudioRecorder _secretVoiceRecorder = AudioRecorder();
-  final AudioPlayer _secretAudioPlayer = AudioPlayer();
   bool _isSecretRecording = false;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
   _secretMessagesSubscription;
@@ -3261,9 +3196,6 @@ class _SecretChatScreenState extends State<SecretChatScreen>
     _listenToSecretMessages();
     _loadSecretMembership();
     _loadGroupPassword();
-    if (!widget.requirePassword) {
-      unawaited(_ensureSecretMembership());
-    }
     clearHistoryNotifier.addListener(_clearSecretMessages);
     _pulseController = AnimationController(
       vsync: this,
@@ -3453,30 +3385,6 @@ class _SecretChatScreenState extends State<SecretChatScreen>
   String get _secretChatId => widget.chatTitle.contains('الغرفة السوداء')
       ? 'shadow_ops'
       : 'secret_group';
-
-  Future<void> _ensureSecretMembership() async {
-    if (!firebaseReady) return;
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    final roomId = widget.chatTitle.contains('الغرفة السوداء')
-        ? 'secret_room'
-        : 'secret_group';
-    try {
-      await FirebaseFirestore.instance
-          .collection('rooms')
-          .doc(roomId)
-          .collection('members')
-          .doc(user.uid)
-          .set({
-            'displayName': user.displayName ?? 'عضو المجموعة',
-            'addedBy': user.uid,
-            'addedAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
-      if (mounted) setState(() => _isSecretMember = true);
-    } catch (error) {
-      debugPrint('Secret membership save error: $error');
-    }
-  }
 
   Future<void> _loadSecretMembership() async {
     if (!firebaseReady) return;
@@ -3783,18 +3691,18 @@ class _SecretChatScreenState extends State<SecretChatScreen>
     final mediaUrl = msg['mediaUrl'] as String?;
     final mediaFile = msg['mediaFile'] as XFile?;
     try {
-      await _secretAudioPlayer.stop();
+      final player = AudioPlayer();
       if (mediaFile != null) {
-        await _secretAudioPlayer.play(DeviceFileSource(mediaFile.path));
+        await player.play(DeviceFileSource(mediaFile.path));
       } else if (mediaUrl != null && mediaUrl.isNotEmpty) {
         if (mediaUrl.startsWith('local://')) {
           final localFile = File(mediaUrl.substring('local://'.length));
           if (await localFile.exists()) {
-            await _secretAudioPlayer.play(DeviceFileSource(localFile.path));
+            await player.play(DeviceFileSource(localFile.path));
             return;
           }
         }
-        await _secretAudioPlayer.play(UrlSource(mediaUrl));
+        await player.play(UrlSource(mediaUrl));
       }
     } catch (error) {
       debugPrint('Secret audio playback error: $error');
@@ -4086,10 +3994,7 @@ class _SecretChatScreenState extends State<SecretChatScreen>
     _pulseController.dispose();
     _passController.dispose();
     _messageController.dispose();
-    unawaited(_secretVoiceRecorder.stop());
-    unawaited(_secretAudioPlayer.stop());
     _secretVoiceRecorder.dispose();
-    _secretAudioPlayer.dispose();
     super.dispose();
   }
 
@@ -4232,7 +4137,6 @@ class _SecretChatScreenState extends State<SecretChatScreen>
                         _groupPasswordHash,
                       )) {
                         setState(() => _isUnlocked = true);
-                        await _ensureSecretMembership();
                       } else {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
@@ -4509,8 +4413,8 @@ class _SecretChatScreenState extends State<SecretChatScreen>
                         onLongPress: () => _showSecretMessageActions(msg),
                         child: ConstrainedBox(
                           constraints: BoxConstraints(
-                            maxWidth: MediaQuery.sizeOf(context).width * 0.78,
-                            minWidth: 76,
+                            maxWidth: MediaQuery.sizeOf(context).width * 0.82,
+                            minWidth: 82,
                           ),
                           child: Container(
                             margin: const EdgeInsets.symmetric(vertical: 5),
@@ -4571,11 +4475,9 @@ class _SecretChatScreenState extends State<SecretChatScreen>
                                   msg["text"]!,
                                   style: const TextStyle(
                                     color: Colors.white,
-                                    fontSize: 14,
-                                    height: 1.3,
+                                    fontSize: 15,
+                                    height: 1.35,
                                   ),
-                                  textDirection: TextDirection.rtl,
-                                  softWrap: true,
                                 ),
                                 const SizedBox(height: 4),
                                 Align(
@@ -6147,7 +6049,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _whaleController.dispose();
     _launchController.dispose();
     _lockPulseController.dispose();
-    unawaited(_voiceRecorder.stop());
     _voiceRecorder.dispose();
     _controller.dispose();
     _chatPasswordController.dispose();
@@ -8004,17 +7905,13 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
 
     try {
       final fileName = 'profile_${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final imageBytes = await image.readAsBytes();
       final uploadTask = FirebaseStorage.instance
           .ref()
           .child('users')
           .child(user.uid)
           .child('profile')
           .child(fileName)
-          .putData(
-            imageBytes,
-            SettableMetadata(contentType: image.mimeType ?? 'image/jpeg'),
-          );
+          .putFile(File(image.path));
 
       final snapshot = await uploadTask;
       final downloadUrl = await snapshot.ref.getDownloadURL();
@@ -8180,7 +8077,7 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
     );
     phoneController.dispose();
     if (!mounted || phoneNumber == null || phoneNumber.isEmpty) return;
-    final normalizedPhoneNumber = normalizePhoneNumber(phoneNumber);
+    final normalizedPhoneNumber = _normalizePhoneNumber(phoneNumber);
     if (!normalizedPhoneNumber.startsWith('+') ||
         normalizedPhoneNumber.length < 10) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -8280,7 +8177,7 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
         throw FirebaseAuthException(code: 'phone-link-failed');
       }
       await FirebaseFirestore.instance.collection('users').doc(linkedUser.uid).set({
-        'phoneNumber': normalizePhoneNumber(linkedUser.phoneNumber!),
+        'phoneNumber': _normalizePhoneNumber(linkedUser.phoneNumber!),
         'phoneSearchKey': _phoneSearchKey(linkedUser.phoneNumber!),
         'phoneLinked': true,
         'phoneUpdatedAt': FieldValue.serverTimestamp(),
@@ -8322,18 +8219,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
         return 'انتهت صلاحية جلسة التحقق، أعد إرسال الكود';
       case 'invalid-phone-number':
         return 'رقم الهاتف غير صحيح، استخدم الصيغة الدولية مثل +201xxxxxxxxx';
-      case 'app-not-authorized':
-        return 'تطبيق Android غير مصرح به في Firebase؛ أضف package name وبصمات SHA-1 وSHA-256 للتطبيق الصحيح';
-      case 'missing-client-identifier':
-        return 'إعدادات تطبيق Android ناقصة؛ أضف google-services.json وأعد بناء التطبيق';
-      case 'captcha-check-failed':
-        return 'فشل التحقق من التطبيق؛ تأكد من SHA-1 وSHA-256 وإعدادات reCAPTCHA في Firebase';
-      case 'invalid-app-credential':
-        return 'بيانات اعتماد التطبيق غير صحيحة؛ تأكد أن google-services.json من نفس مشروع Firebase';
-      case 'quota-exceeded':
-        return 'تم تجاوز حصة رسائل SMS في Firebase، حاول لاحقًا أو راجع خطة المشروع';
-      case 'network-request-failed':
-        return 'تعذر الاتصال بخدمة Firebase، تحقق من الإنترنت ثم أعد المحاولة';
       case 'too-many-requests':
         return 'تم تجاوز عدد المحاولات، حاول لاحقًا';
       case 'operation-not-allowed':
@@ -8514,8 +8399,28 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                                           backgroundColor: isDark
                                               ? Colors.black
                                               : Colors.white,
-                                          child: _profileImageUrl != null &&
-                                                  _profileImageUrl!.isNotEmpty
+                                          child: imageBytes != null
+                                              ? ClipOval(
+                                                  child: Image.memory(
+                                                    imageBytes,
+                                                    width: 112,
+                                                    height: 112,
+                                                    fit: BoxFit.cover,
+                                                    errorBuilder: (
+                                                      context,
+                                                      error,
+                                                      stackTrace,
+                                                    ) => Icon(
+                                                      Icons.person,
+                                                      size: 65,
+                                                      color: isDark
+                                                          ? const Color(0xFF00FF66)
+                                                          : Colors.black54,
+                                                    ),
+                                                  ),
+                                                )
+                                              : _profileImageUrl != null &&
+                                                    _profileImageUrl!.isNotEmpty
                                               ? ClipOval(
                                                   child: Image.network(
                                                     _profileImageUrl!,
@@ -8526,29 +8431,13 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                                                       context,
                                                       error,
                                                       stackTrace,
-                                                    ) => imageBytes != null
-                                                        ? Image.memory(
-                                                            imageBytes,
-                                                            width: 112,
-                                                            height: 112,
-                                                            fit: BoxFit.cover,
-                                                          )
-                                                        : Icon(
-                                                            Icons.person,
-                                                            size: 65,
-                                                            color: isDark
-                                                                ? const Color(0xFF00FF66)
-                                                                : Colors.black54,
-                                                          ),
-                                                  ),
-                                                )
-                                              : imageBytes != null
-                                              ? ClipOval(
-                                                  child: Image.memory(
-                                                    imageBytes,
-                                                    width: 112,
-                                                    height: 112,
-                                                    fit: BoxFit.cover,
+                                                    ) => Icon(
+                                                      Icons.person,
+                                                      size: 65,
+                                                      color: isDark
+                                                          ? const Color(0xFF00FF66)
+                                                          : Colors.black54,
+                                                    ),
                                                   ),
                                                 )
                                               : Icon(
