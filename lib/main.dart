@@ -1211,9 +1211,7 @@ class _AuthGateState extends State<AuthGate> {
       return Scaffold(
         body: Center(
           child: Text(
-            firebaseFailureMessage.isEmpty
-                ? 'تعذر الاتصال بـ Firebase'
-                : 'تعذر الاتصال بـ Firebase\n$firebaseFailureMessage',
+            'الوضع المحلي مفعل\nسيتم استكمال المزايا عند اتصال Firebase',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.titleMedium,
           ),
@@ -7990,8 +7988,14 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
       userProfileImageNotifier.value = image;
       userProfileImageBytesNotifier.value = bytes;
       await _saveLocalProfileImage(bytes);
-      if (mounted) setState(() => _profileImageUrl = null);
-      await _uploadProfileImage(image);
+      if (mounted) {
+        setState(() {
+          _profileImageUrl = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم حفظ الصورة على الجهاز فقط')),
+        );
+      }
     } catch (error) {
       debugPrint('Profile image pick error: $error');
       if (mounted) {
@@ -8029,59 +8033,11 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
   }
 
   Future<void> _uploadProfileImage(XFile image) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (!firebaseReady || user == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم حفظ الصورة على الجهاز')),
-        );
-      }
-      return;
-    }
-
-    try {
-      final fileName = 'profile_${user.uid}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final imageBytes = await image.readAsBytes();
-      final uploadTask = FirebaseStorage.instance
-          .ref()
-          .child('users')
-          .child(user.uid)
-          .child('profile')
-          .child(fileName)
-          .putData(
-            imageBytes,
-            SettableMetadata(contentType: image.mimeType ?? 'image/jpeg'),
-          );
-
-      final snapshot = await uploadTask;
-      final downloadUrl = await snapshot.ref.getDownloadURL();
-
-      // حفظ رابط الصورة في Firebase
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .set({
-            'photoUrl': downloadUrl,
-            'photoUpdatedAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
-
-      if (mounted) {
-        setState(() {
-          _profileImageUrl = downloadUrl;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم حفظ الصورة الشخصية بنجاح ✨')),
-        );
-      }
-    } catch (error) {
-      debugPrint('Profile image upload error: $error');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('تعذر رفع الصورة، تم حفظها على الجهاز'),
-          ),
-        );
-      }
+    debugPrint('Profile storage is disabled for this build; using local image only.');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تم حفظ الصورة على الجهاز فقط')),
+      );
     }
   }
 
@@ -8104,11 +8060,10 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
       if (mounted) {
         setState(() {
           userName = data?['displayName'] as String? ?? userName;
-          _profileImageUrl = data?['photoUrl'] as String?;
+          _profileImageUrl = null;
           _linkedPhoneNumber = refreshedUser.phoneNumber;
           nameController.text = userName;
         });
-
       }
     } catch (error) {
       debugPrint('Profile load error: $error');
