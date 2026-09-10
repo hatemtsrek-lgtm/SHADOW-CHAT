@@ -2510,6 +2510,36 @@ class _ContactsScreenState extends State<ContactsScreen> {
     }
   }
 
+  Future<void> _addAppUserByTap(String targetUid, String publicId, String displayName) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (!firebaseReady || user == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('يحتاج التطبيق إلى اتصال Firebase لإضافة مستخدم من التطبيق')),
+        );
+      }
+      return;
+    }
+    if (targetUid == user.uid) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('لا يمكنك إضافة حسابك')),
+        );
+      }
+      return;
+    }
+    await _saveContactRelationship(
+      targetUid: targetUid,
+      displayName: displayName.isEmpty ? publicId : displayName,
+      publicId: publicId,
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تمت إضافة $displayName بنقرة واحدة')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.scope == ContactScope.room && !widget.ownerVerified) {
@@ -2595,6 +2625,65 @@ class _ContactsScreenState extends State<ContactsScreen> {
                           );
                         },
                       ),
+                    ),
+                  if (firebaseReady)
+                    StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: FirebaseFirestore.instance
+                          .collection('publicProfiles')
+                          .orderBy('updatedAt', descending: true)
+                          .limit(8)
+                          .snapshots(),
+                      builder: (context, snapshot) {
+                        final docs = snapshot.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                        final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+                        final appUsers = docs
+                            .where((doc) => doc.id != currentUserId)
+                            .toList();
+                        if (appUsers.isEmpty) {
+                          return const SizedBox.shrink();
+                        }
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0F1C1A),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'إضافة من التطبيق بنقرة واحدة',
+                                style: TextStyle(
+                                  color: Color(0xFF38E8A5),
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              ...appUsers.map((doc) {
+                                final data = doc.data();
+                                final publicId = (data['publicId'] as String?) ?? doc.id;
+                                final displayName = (data['displayName'] as String?) ?? 'مستخدم';
+                                return Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        '$displayName · $publicId',
+                                        style: const TextStyle(color: Colors.white70),
+                                      ),
+                                    ),
+                                    TextButton.icon(
+                                      onPressed: () => _addAppUserByTap(doc.id, publicId, displayName),
+                                      icon: const Icon(Icons.person_add_alt_1, size: 18),
+                                      label: const Text('إضافة'),
+                                    ),
+                                  ],
+                                );
+                              }).toList(),
+                            ],
+                          ),
+                        );
+                      },
                     ),
                   TextField(
                     controller: _contactIdController,
