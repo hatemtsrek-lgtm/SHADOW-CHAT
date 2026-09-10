@@ -500,6 +500,86 @@ String directChatDocumentId(String uidA, String uidB) {
   return 'dm_${participants[0]}_${participants[1]}';
 }
 
+Future<bool> _hasApprovedDirectContact(String targetUid) async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (!firebaseReady || user == null || targetUid.isEmpty) return false;
+
+  try {
+    final myDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(targetUid)
+        .get();
+    final otherDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(targetUid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(user.uid)
+        .get();
+
+    return myDoc.data()?['status'] == 'accepted' &&
+        otherDoc.data()?['status'] == 'accepted';
+  } catch (error) {
+    debugPrint('Approved contact check error: $error');
+    return false;
+  }
+}
+
+Future<void> _acceptContactRequest(String contactUid, String displayName) async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (!firebaseReady || user == null || contactUid.isEmpty) return;
+
+  try {
+    final update = {
+      'status': 'accepted',
+      'lastMessage': 'تمت الموافقة على الدردشة',
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(contactUid)
+        .set(update, SetOptions(merge: true));
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(contactUid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(user.uid)
+        .set(update, SetOptions(merge: true));
+  } catch (error) {
+    debugPrint('Accept contact request error for $displayName: $error');
+  }
+}
+
+Future<void> _rejectContactRequest(String contactUid, String displayName) async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (!firebaseReady || user == null || contactUid.isEmpty) return;
+
+  try {
+    final update = {
+      'status': 'rejected',
+      'lastMessage': 'تم رفض طلب الاتصال',
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(contactUid)
+        .set(update, SetOptions(merge: true));
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(contactUid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(user.uid)
+        .set(update, SetOptions(merge: true));
+  } catch (error) {
+    debugPrint('Reject contact request error for $displayName: $error');
+  }
+}
+
 Future<void> saveChatPassword(String chatName, String password) async {
   final passwordHash = await hashPassword(password);
   chatPasswordsNotifier.value = {
@@ -2052,7 +2132,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                   const SnackBar(
                                     content: Text('تمت إزالة الدردشة'),
                                   ),
-                                ),
+                                  );
                               },
                               child: Container(
                                 margin: const EdgeInsets.symmetric(vertical: 4),
