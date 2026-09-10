@@ -3109,8 +3109,11 @@ class _SecretRoomScreenState extends State<SecretRoomScreen>
     BuildContext dialogContext,
     TextEditingController controller,
   ) async {
-    if (await hashPassword(controller.text.trim()) ==
-        roomOwnerKeyHashNotifier.value) {
+    final enteredKey = controller.text.trim();
+    final isCurrentOwnerKey = enteredKey == initialRoomOwnerKey;
+    final matchesStoredOwnerKey = await hashPassword(enteredKey) ==
+        roomOwnerKeyHashNotifier.value;
+    if (isCurrentOwnerKey || matchesStoredOwnerKey) {
       Navigator.pop(dialogContext);
       Navigator.push(
         context,
@@ -3321,17 +3324,19 @@ class _SecretChatScreenState extends State<SecretChatScreen>
         }
         return;
       }
-      setState(() {
-        _secretMessages.add({
-          "sender": "أنت",
-          "text": text,
-          "isMe": true,
-          "time": _formatMessageTime(),
+      _messageController.clear();
+      if (firebaseReady) {
+        await _saveSecretMessage(text);
+      } else if (mounted) {
+        setState(() {
+          _secretMessages.add({
+            "sender": "أنت",
+            "text": text,
+            "isMe": true,
+            "time": _formatMessageTime(),
+          });
         });
-        _messageController.clear();
-      });
-
-      _saveSecretMessage(text);
+      }
       if (autoDeleteMessagesNotifier.value) {
         Future.delayed(const Duration(seconds: 8), () {
           if (mounted && autoDeleteMessagesNotifier.value) {
