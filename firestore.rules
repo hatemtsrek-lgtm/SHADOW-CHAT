@@ -91,11 +91,12 @@ service cloud.firestore {
       allow delete: if isDirectChatParticipant(chatId);
     }
 
-    match /users/{userId}/{contactCollection}/{contactId} {
-      allow read, write: if isSelf(userId)
-        && (contactCollection == 'regularContacts'
-          || contactCollection == 'groupContacts'
-          || contactCollection == 'roomContacts');
+    match /users/{userId}/groupContacts/{contactId} {
+      allow read, write: if isSelf(userId);
+    }
+
+    match /users/{userId}/roomContacts/{contactId} {
+      allow read, write: if isSelf(userId);
     }
 
     match /users/{userId}/regularContacts/{contactId} {
