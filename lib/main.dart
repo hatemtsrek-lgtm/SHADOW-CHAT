@@ -8560,7 +8560,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
   String userName = "Shadow User";
   late TextEditingController nameController;
   final ImagePicker _picker = ImagePicker();
-  String? _profileImageUrl;
   String? _linkedPhoneNumber;
   bool _isLinkingPhone = false;
 
@@ -8590,9 +8589,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
       userProfileImageBytesNotifier.value = bytes;
       await _saveLocalProfileImage(bytes);
       if (mounted) {
-        setState(() {
-          _profileImageUrl = null;
-        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('تم حفظ الصورة على الجهاز فقط')),
         );
@@ -8638,15 +8634,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
     }
   }
 
-  Future<void> _uploadProfileImage(XFile image) async {
-    debugPrint('Profile storage is disabled for this build; using local image only.');
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم حفظ الصورة على الجهاز فقط')),
-      );
-    }
-  }
-
   Future<void> _loadProfile() async {
     await _loadLocalProfileImage();
     final initialUser = FirebaseAuth.instance.currentUser;
@@ -8666,7 +8653,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
       if (mounted) {
         setState(() {
           userName = data?['displayName'] as String? ?? userName;
-          _profileImageUrl = null;
           _linkedPhoneNumber = refreshedUser.phoneNumber;
           nameController.text = userName;
         });
@@ -8678,7 +8664,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
 
   void _showProfileImageViewer() {
     final imageBytes = userProfileImageBytesNotifier.value;
-    final imageUrl = _profileImageUrl;
 
     showDialog(
       context: context,
@@ -8698,16 +8683,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                     ? Image.memory(
                         imageBytes,
                         fit: BoxFit.contain,
-                      )
-                    : imageUrl != null && imageUrl.isNotEmpty
-                    ? Image.network(
-                        imageUrl,
-                        fit: BoxFit.contain,
-                        errorBuilder: (context, error, stackTrace) => const Icon(
-                          Icons.person,
-                          size: 110,
-                          color: Color(0xFF00FF66),
-                        ),
                       )
                     : Container(
                         width: 220,
@@ -9053,9 +9028,7 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                           clipBehavior: Clip.hardEdge,
                           child: InkWell(
                             onTap: () {
-                              if (userProfileImageBytesNotifier.value != null ||
-                                  (_profileImageUrl != null &&
-                                      _profileImageUrl!.isNotEmpty)) {
+                              if (userProfileImageBytesNotifier.value != null) {
                                 _showProfileImageViewer();
                               } else {
                                 _pickProfileImage();
@@ -9096,27 +9069,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                                                               ? const Color(0xFF00FF66)
                                                               : Colors.black54,
                                                         ),
-                                                  ),
-                                                )
-                                              : _profileImageUrl != null &&
-                                                  _profileImageUrl!.isNotEmpty
-                                              ? ClipOval(
-                                                  child: Image.network(
-                                                    _profileImageUrl!,
-                                                    width: 112,
-                                                    height: 112,
-                                                    fit: BoxFit.cover,
-                                                    errorBuilder: (
-                                                      context,
-                                                      error,
-                                                      stackTrace,
-                                                    ) => Icon(
-                                                            Icons.person,
-                                                            size: 65,
-                                                            color: isDark
-                                                                ? const Color(0xFF00FF66)
-                                                                : Colors.black54,
-                                                          ),
                                                   ),
                                                 )
                                               : Icon(
