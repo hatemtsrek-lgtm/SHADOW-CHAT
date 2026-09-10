@@ -25,7 +25,11 @@ service cloud.firestore {
         && request.resource.data.text is string
         && request.resource.data.text.size() <= 4000
         && request.resource.data.uid == request.auth.uid;
-      allow update: if false;
+      allow update: if signedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['deletedFor']);
       allow delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
@@ -62,12 +66,20 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /publicProfiles/{userId} {
+      allow read: if signedIn();
+      allow create, update: if isSelf(userId);
+      allow delete: if false;
+    }
+
     match /rooms/{roomId}/members/{memberId} {
       allow read: if signedIn();
       allow create: if signedIn()
         && request.resource.data.addedBy == request.auth.uid
-        && memberId != request.auth.uid;
-      allow update, delete: if false;
+        && (memberId == request.auth.uid || isOwner());
+      allow update: if isOwner()
+        && request.resource.data.addedBy == resource.data.addedBy;
+      allow delete: if isOwner();
     }
 
     match /config/app {

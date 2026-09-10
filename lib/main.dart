@@ -951,7 +951,7 @@ Future<void> ensureUserProfile() async {
   publicUserIdNotifier.value = publicId;
   if (profileReadSucceeded) {
     try {
-      await profileRef.set({
+      final profileData = {
         'publicId': publicId,
         'displayName': profile?.data()?['displayName'] ?? 'Shadow User',
         if (user.phoneNumber != null)
@@ -959,7 +959,22 @@ Future<void> ensureUserProfile() async {
         if (user.phoneNumber != null)
           'phoneSearchKey': _phoneSearchKey(user.phoneNumber!),
         'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true)).timeout(const Duration(seconds: 10));
+      };
+      await profileRef.set(profileData, SetOptions(merge: true))
+          .timeout(const Duration(seconds: 10));
+      await FirebaseFirestore.instance
+          .collection('publicProfiles')
+          .doc(user.uid)
+          .set({
+            'uid': user.uid,
+            'publicId': publicId,
+            'displayName': profileData['displayName'],
+            if (profileData['phoneSearchKey'] != null)
+              'phoneSearchKey': profileData['phoneSearchKey'],
+            if (profileData['phoneNumber'] != null)
+              'phoneNumber': profileData['phoneNumber'],
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
     } catch (error) {
       debugPrint('User profile sync failed: $error');
     }
@@ -2228,14 +2243,14 @@ class _ContactsScreenState extends State<ContactsScreen> {
       if (input.startsWith('+') || RegExp(r'^[0-9٠-٩ ()-]+$').hasMatch(input)) {
         final phoneKey = _phoneMatchKey(input);
         matchingUsers = await FirebaseFirestore.instance
-            .collection('users')
+          .collection('publicProfiles')
             .where('phoneSearchKey', isEqualTo: phoneKey)
             .limit(1)
             .get()
             .timeout(const Duration(seconds: 12));
       } else {
         matchingUsers = await FirebaseFirestore.instance
-            .collection('users')
+          .collection('publicProfiles')
             .where('publicId', isEqualTo: publicId)
             .limit(1)
             .get()
@@ -2354,7 +2369,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     try {
       final phoneKey = _phoneMatchKey(phone);
         final usersSnapshot = await FirebaseFirestore.instance
-          .collection('users')
+          .collection('publicProfiles')
           .where('phoneSearchKey', isEqualTo: phoneKey)
           .limit(1)
           .get()
@@ -8285,6 +8300,15 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
         'phoneLinked': true,
         'phoneUpdatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+      await FirebaseFirestore.instance
+          .collection('publicProfiles')
+          .doc(linkedUser.uid)
+          .set({
+            'uid': linkedUser.uid,
+            'phoneNumber': normalizePhoneNumber(linkedUser.phoneNumber!),
+            'phoneSearchKey': _phoneSearchKey(linkedUser.phoneNumber!),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
       if (!mounted) return;
       setState(() {
         _linkedPhoneNumber = linkedUser.phoneNumber;
