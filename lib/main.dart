@@ -2209,13 +2209,55 @@ class _ContactsScreenState extends State<ContactsScreen> {
     super.dispose();
   }
 
+  Future<void> _saveLocalContactEntry({
+    required String targetUid,
+    required String displayName,
+    required String publicId,
+  }) async {
+    final preferences = await getSafeSharedPreferences();
+    if (preferences == null) return;
+    final key = 'local_contacts_${widget.scope.name}';
+    final existing = preferences.getStringList(key) ?? const <String>[];
+    final decoded = existing
+        .map((item) => jsonDecode(item))
+        .whereType<Map<String, dynamic>>()
+        .toList();
+    final entry = {
+      'contactId': publicId,
+      'uid': targetUid,
+      'displayName': displayName.isEmpty ? 'جهة اتصال' : displayName,
+      'name': displayName.isEmpty ? 'جهة اتصال' : displayName,
+      'lastMessage': 'لا توجد رسائل',
+      'updatedAt': DateTime.now().toIso8601String(),
+    };
+    final index = decoded.indexWhere((item) => item['uid'] == targetUid);
+    if (index >= 0) {
+      decoded[index] = entry;
+    } else {
+      decoded.add(entry);
+    }
+    await preferences.setStringList(
+      key,
+      decoded.map((item) => jsonEncode(item)).toList(),
+    );
+  }
+
   Future<void> _saveContactRelationship({
     required String targetUid,
     required String displayName,
     required String publicId,
   }) async {
     final user = FirebaseAuth.instance.currentUser;
-    if (!firebaseReady || user == null || targetUid.isEmpty) return;
+    if (targetUid.isEmpty) return;
+
+    if (!firebaseReady || user == null) {
+      await _saveLocalContactEntry(
+        targetUid: targetUid,
+        displayName: displayName,
+        publicId: publicId,
+      );
+      return;
+    }
 
     await FirebaseFirestore.instance
         .collection('users')
@@ -2254,10 +2296,25 @@ class _ContactsScreenState extends State<ContactsScreen> {
     final String publicId = input.toUpperCase();
     final String name = _nameController.text.trim();
     final User? user = FirebaseAuth.instance.currentUser;
-    if (!firebaseReady ||
-        user == null ||
-        input.isEmpty)
+    if (input.isEmpty) return;
+
+    if (!firebaseReady || user == null) {
+      final targetUid = publicId.isEmpty ? 'local_${DateTime.now().millisecondsSinceEpoch}' : publicId;
+      await _saveContactRelationship(
+        targetUid: targetUid,
+        displayName: name.isEmpty ? 'جهة اتصال محلية' : name,
+        publicId: publicId.isEmpty ? targetUid : publicId,
+      );
+      _contactIdController.clear();
+      _nameController.clear();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تمت إضافة جهة الاتصال محليًا')),
+        );
+      }
       return;
+    }
+
     try {
       QuerySnapshot<Map<String, dynamic>> matchingUsers;
       if (input.startsWith('+') || RegExp(r'^[0-9٠-٩ ()-]+$').hasMatch(input)) {
@@ -2385,7 +2442,23 @@ class _ContactsScreenState extends State<ContactsScreen> {
         ? ''
         : _normalizePhone(contact.phones.first.number);
     final user = FirebaseAuth.instance.currentUser;
-    if (!firebaseReady || user == null || phone.isEmpty) return;
+    if (phone.isEmpty) return;
+    if (!firebaseReady || user == null) {
+      final targetUid = 'local_contact_${DateTime.now().millisecondsSinceEpoch}';
+      await _saveContactRelationship(
+        targetUid: targetUid,
+        displayName: (contact.displayName ?? '').isEmpty
+            ? 'جهة اتصال محلية'
+            : contact.displayName ?? 'جهة اتصال محلية',
+        publicId: targetUid,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تمت إضافة جهة الاتصال محليًا')),
+        );
+      }
+      return;
+    }
     try {
       final phoneKey = _phoneMatchKey(phone);
         final usersSnapshot = await FirebaseFirestore.instance
@@ -8124,17 +8197,31 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
     );
   }
 
+  Future<void> _saveLocalPhoneNumber(String phone) async {
+    final preferences = await getSafeSharedPreferences();
+    if (preferences == null) return;
+    await preferences.setString('local_linked_phone_number', phone);
+  }
+
+  Future<String?> _loadLocalPhoneNumber() async {
+    final preferences = await getSafeSharedPreferences();
+    if (preferences == null) return null;
+    final value = preferences.getString('local_linked_phone_number');
+    return value != null && value.isNotEmpty ? value : null;
+  }
+
   Future<void> _linkPhoneNumber() async {
     final user = FirebaseAuth.instance.currentUser;
-    if (!firebaseReady || user == null) {
+    final existingLocalPhone = await _loadLocalPhoneNumber();
+    if (user != null && user.phoneNumber != null && user.phoneNumber!.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Firebase غير متصل')),
+        const SnackBar(content: Text('رقم الهاتف مرتبط بهذا الحساب بالفعل')),
       );
       return;
     }
-    if (user.phoneNumber != null && user.phoneNumber!.isNotEmpty) {
+    if (existingLocalPhone != null && existingLocalPhone.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('رقم الهاتف مرتبط بهذا الحساب بالفعل')),
+        const SnackBar(content: Text('رقم الهاتف محجوز على الجهاز بالفعل')),
       );
       return;
     }
@@ -8165,7 +8252,7 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
               final value = phoneController.text.trim();
               if (value.isNotEmpty) Navigator.pop(dialogContext, value);
             },
-            child: const Text('إرسال الكود'),
+            child: const Text('حفظ محليًا'),
           ),
         ],
       ),
@@ -8184,80 +8271,23 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
     }
 
     setState(() => _isLinkingPhone = true);
-    String? verificationId;
     try {
-      await FirebaseAuth.instance.verifyPhoneNumber(
-        phoneNumber: normalizedPhoneNumber,
-        // لا نربط الرقم تلقائيًا حتى لا يظهر نجاح بدون إدخال كود SMS.
-        verificationCompleted: (_) {
-          debugPrint('Automatic phone verification ignored; waiting for SMS code.');
-        },
-        verificationFailed: (error) {
-          if (mounted) {
-            setState(() => _isLinkingPhone = false);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(_phoneAuthErrorMessage(error))),
-            );
-          }
-        },
-        codeSent: (id, _) async {
-          verificationId = id;
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('تم إرسال كود SMS فعليًا')),
-            );
-          }
-          if (!mounted) return;
-          final codeController = TextEditingController();
-          final code = await showDialog<String>(
-            context: context,
-            barrierDismissible: false,
-            builder: (dialogContext) => AlertDialog(
-              title: const Text('أدخل كود التحقق'),
-              content: TextField(
-                controller: codeController,
-                keyboardType: TextInputType.number,
-                autofocus: true,
-                textAlign: TextAlign.center,
-                decoration: const InputDecoration(
-                  labelText: 'كود SMS',
-                  prefixIcon: Icon(Icons.sms_outlined),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('إلغاء'),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    final value = codeController.text.trim();
-                    if (value.isNotEmpty) Navigator.pop(dialogContext, value);
-                  },
-                  child: const Text('تأكيد الربط'),
-                ),
-              ],
-            ),
-          );
-          codeController.dispose();
-          if (!mounted || code == null || code.isEmpty || verificationId == null) {
-            if (mounted) setState(() => _isLinkingPhone = false);
-            return;
-          }
-          final credential = PhoneAuthProvider.credential(
-            verificationId: verificationId!,
-            smsCode: code,
-          );
-          await _finishPhoneLink(credential);
-        },
-        codeAutoRetrievalTimeout: (id) => verificationId = id,
-      ).timeout(const Duration(seconds: 25));
+      await _saveLocalPhoneNumber(normalizedPhoneNumber);
+      setState(() {
+        _linkedPhoneNumber = normalizedPhoneNumber;
+        _isLinkingPhone = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم حفظ رقم الهاتف على الجهاز فقط')),
+        );
+      }
     } catch (error) {
-      debugPrint('Phone linking error: $error');
+      debugPrint('Local phone link save error: $error');
       if (mounted) {
         setState(() => _isLinkingPhone = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_phoneAuthErrorMessage(error))),
+          const SnackBar(content: Text('تعذر حفظ رقم الهاتف على الجهاز')),
         );
       }
     }
