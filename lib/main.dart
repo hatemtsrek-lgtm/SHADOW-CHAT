@@ -1974,7 +1974,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           );
                         }
 
-                        final contacts = (snapshot.data?.docs ?? [])
+                        final contacts = (snapshot.data?.docs ??
+                          <QueryDocumentSnapshot<Map<String, dynamic>>>[])
                             .where((doc) => !_isUnknownContact(doc.data()))
                             .toList();
 
