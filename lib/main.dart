@@ -1157,6 +1157,8 @@ class AuthGate extends StatefulWidget {
 class _AuthGateState extends State<AuthGate> {
   bool _isTryingAnonymousLogin = false;
   bool _lockSettingsLoaded = false;
+  bool _sessionPrepared = false;
+  bool _preparingSession = false;
   String? _authError;
 
   Future<void> _ensureAnonymousLogin() async {
@@ -1177,6 +1179,25 @@ class _AuthGateState extends State<AuthGate> {
           _authError = error.toString();
         });
       }
+    }
+  }
+
+  Future<void> _prepareAuthenticatedSession() async {
+    if (_sessionPrepared || _preparingSession) return;
+    _preparingSession = true;
+    try {
+      await ensureUserProfile();
+      await setupPushNotifications();
+      if (mounted) setState(() => _authError = null);
+    } catch (error) {
+      debugPrint('Authenticated session setup failed: $error');
+      if (mounted) {
+        setState(() => _authError = error.toString());
+      }
+    } finally {
+      _sessionPrepared = true;
+      _preparingSession = false;
+      if (mounted) setState(() {});
     }
   }
 
@@ -1240,6 +1261,13 @@ class _AuthGateState extends State<AuthGate> {
                 ],
               ),
             ),
+          );
+        }
+
+        if (!_sessionPrepared) {
+          unawaited(_prepareAuthenticatedSession());
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
           );
         }
 
