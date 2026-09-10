@@ -2120,7 +2120,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                         Row(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            Container(
+                                            if (isIncomingRequest)
+                                              Container(
                                               height: 32,
                                               decoration: BoxDecoration(
                                                 color: const Color(0xFF00FF66).withOpacity(0.15),
@@ -2141,7 +2142,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                                 ),
                                               ),
                                             ),
-                                            const SizedBox(width: 8),
+                                            if (isIncomingRequest) const SizedBox(width: 8),
                                             Container(
                                               height: 32,
                                               decoration: BoxDecoration(
@@ -2156,7 +2157,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                                 padding: const EdgeInsets.symmetric(horizontal: 12),
                                                 constraints: const BoxConstraints(),
                                                 icon: const Icon(Icons.close, color: Colors.redAccent),
-                                                tooltip: 'رفض',
+                                                tooltip: isPendingRequest ? 'إلغاء الطلب' : 'رفض الطلب',
                                                 onPressed: () => _rejectContactRequest(
                                                   contactUid,
                                                   contactName.toString(),
@@ -2899,7 +2900,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                     TextButton.icon(
                                       onPressed: () => _addAppUserByTap(doc.id, publicId, displayName),
                                       icon: const Icon(Icons.person_add_alt_1, size: 18),
-                                      label: const Text('إضافة'),
+                                      label: const Text('إرسال طلب'),
                                     ),
                                   ],
                                 );
@@ -2932,7 +2933,11 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     child: ElevatedButton.icon(
                       onPressed: _addContact,
                       icon: const Icon(Icons.person_add_alt_1),
-                      label: const Text('حفظ جهة الاتصال'),
+                      label: Text(
+                        widget.scope == ContactScope.regular
+                            ? 'إرسال طلب'
+                            : 'حفظ جهة الاتصال',
+                      ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF38E8A5),
                         foregroundColor: Colors.black,
