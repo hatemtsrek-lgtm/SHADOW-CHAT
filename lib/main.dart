@@ -1824,6 +1824,30 @@ class _ChatListScreenState extends State<ChatListScreen> {
     ).then((_) => passwordController.dispose());
   }
 
+  bool _isUnknownContact(Map<String, dynamic> data) {
+    final name = data['displayName'];
+    if (name is! String || name.trim().isEmpty) return true;
+    final normalizedName = name.trim().toLowerCase();
+    return normalizedName == 'غير معرف' ||
+        normalizedName == 'غير معروف' ||
+        normalizedName == 'unknown';
+  }
+
+  Future<void> _removeChatContact(String contactUid) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (!firebaseReady || user == null || contactUid.isEmpty) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(contactUid)
+          .delete();
+    } catch (error) {
+      debugPrint('Chat contact removal error: $error');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final User? user = FirebaseAuth.instance.currentUser;
@@ -1922,7 +1946,15 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           );
                         }
 
-                        final contacts = snapshot.data?.docs ?? [];
+                        final contacts = (snapshot.data?.docs ?? [])
+                            .where((doc) => !_isUnknownContact(doc.data()))
+                            .toList();
+
+                        for (final doc in snapshot.data?.docs ?? []) {
+                          if (_isUnknownContact(doc.data())) {
+                            unawaited(_removeChatContact(doc.id));
+                          }
+                        }
 
                         if (contacts.isEmpty) {
                           return Center(
@@ -1963,52 +1995,81 @@ class _ChatListScreenState extends State<ChatListScreen> {
                             final lastMessage = contactData['lastMessage'] ?? 'لا توجد رسائل';
                             final contactUid = contacts[index].id;
 
-                            return ListTile(
-                              leading: CircleAvatar(
-                                radius: 28,
-                                backgroundColor: const Color(0xFF00FF66).withOpacity(0.2),
-                                child: Text(
-                                  contactName.toString().isNotEmpty
-                                      ? contactName.toString()[0]
-                                      : 'م',
+                            return Dismissible(
+                              key: ValueKey('chat-$contactUid'),
+                              direction: DismissDirection.endToStart,
+                              background: Container(
+                                margin: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                alignment: Alignment.centerLeft,
+                                padding: const EdgeInsets.only(left: 20),
+                                decoration: BoxDecoration(
+                                  color: Colors.redAccent,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              onDismissed: (_) {
+                                unawaited(_removeChatContact(contactUid));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('تمت إزالة الدردشة'),
+                                  ),
+                                ),
+                              },
+                              child: ListTile(
+                                leading: CircleAvatar(
+                                  radius: 28,
+                                  backgroundColor: const Color(0xFF00FF66).withOpacity(0.2),
+                                  child: Text(
+                                    contactName.toString().isNotEmpty
+                                        ? contactName.toString()[0]
+                                        : 'م',
+                                    style: const TextStyle(
+                                      color: Color(0xFF00FF66),
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                title: Text(
+                                  contactName.toString(),
                                   style: const TextStyle(
-                                    color: Color(0xFF00FF66),
-                                    fontSize: 20,
+                                    color: Colors.white,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
-                              ),
-                              title: Text(
-                                contactName.toString(),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
+                                subtitle: Text(
+                                  lastMessage.toString(),
+                                  style: const TextStyle(color: Colors.white70),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                              ),
-                              subtitle: Text(
-                                lastMessage.toString(),
-                                style: const TextStyle(color: Colors.white70),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              trailing: const Text(
-                                "أمس",
-                                style: TextStyle(
-                                  color: Color(0xFF00FF66),
-                                  fontSize: 12,
-                                ),
-                              ),
-                              onTap: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => ChatScreen(
-                                      chatName: contactName.toString(),
-                                      contactUid: contactUid,
-                                    ),
+                                trailing: IconButton(
+                                  icon: const Icon(
+                                    Icons.delete_outline,
+                                    color: Colors.redAccent,
                                   ),
-                                );
-                              },
+                                  tooltip: 'إزالة الدردشة',
+                                  onPressed: () => _removeChatContact(contactUid),
+                                ),
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => ChatScreen(
+                                        chatName: contactName.toString(),
+                                        contactUid: contactUid,
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
                             );
                           },
                         );
