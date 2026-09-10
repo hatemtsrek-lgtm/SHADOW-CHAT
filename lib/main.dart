@@ -4436,39 +4436,39 @@ class _SecretChatScreenState extends State<SecretChatScreen>
                 ),
               ),
               Container(
-                margin: const EdgeInsets.fromLTRB(14, 8, 14, 4),
-                padding: const EdgeInsets.all(16),
+                margin: const EdgeInsets.fromLTRB(14, 4, 14, 2),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 7,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.amberAccent.withOpacity(0.06),
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: Colors.amberAccent.withOpacity(0.25),
                   ),
                 ),
-                child: Column(
+                child: Row(
                   children: [
                     const Icon(
                       Icons.verified_user_rounded,
                       color: Colors.amberAccent,
-                      size: 30,
+                      size: 20,
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      widget.chatTitle.contains('الغرفة السوداء')
-                          ? 'أهلاً بك في غرفة Shadow Ops'
-                          : 'أهلاً بك في المجموعة السرية الآمنة',
-                      style: const TextStyle(
-                        color: Colors.amberAccent,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        widget.chatTitle.contains('الغرفة السوداء')
+                            ? 'أهلاً بك في غرفة Shadow Ops · الرسائل مشفرة'
+                            : 'أهلاً بك في المجموعة السرية · الرسائل مشفرة',
+                        style: const TextStyle(
+                          color: Colors.amberAccent,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'جميع الرسائل هنا مشفرة ومؤمنة بالكامل.',
-                      style: TextStyle(color: Colors.grey, fontSize: 11),
-                      textAlign: TextAlign.center,
                     ),
                   ],
                 ),
