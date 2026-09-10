@@ -1156,7 +1156,6 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   bool _isTryingAnonymousLogin = false;
-  bool _lockSettingsLoaded = false;
   bool _sessionPrepared = false;
   bool _preparingSession = false;
   String? _authError;
@@ -1188,6 +1187,7 @@ class _AuthGateState extends State<AuthGate> {
     try {
       await ensureUserProfile();
       await setupPushNotifications();
+      await loadAppLockSettings();
       if (mounted) setState(() => _authError = null);
     } catch (error) {
       debugPrint('Authenticated session setup failed: $error');
@@ -1199,12 +1199,6 @@ class _AuthGateState extends State<AuthGate> {
       _preparingSession = false;
       if (mounted) setState(() {});
     }
-  }
-
-  void _loadLockSettingsOnce() {
-    if (_lockSettingsLoaded) return;
-    _lockSettingsLoaded = true;
-    unawaited(loadAppLockSettings());
   }
 
   @override
@@ -1271,7 +1265,6 @@ class _AuthGateState extends State<AuthGate> {
           );
         }
 
-        _loadLockSettingsOnce();
         return const AppLockGate();
       },
     );
@@ -8567,7 +8560,16 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                                           backgroundColor: isDark
                                               ? Colors.black
                                               : Colors.white,
-                                          child: _profileImageUrl != null &&
+                                          child: imageBytes != null
+                                              ? ClipOval(
+                                                  child: Image.memory(
+                                                    imageBytes,
+                                                    width: 112,
+                                                    height: 112,
+                                                    fit: BoxFit.cover,
+                                                  ),
+                                                )
+                                              : _profileImageUrl != null &&
                                                   _profileImageUrl!.isNotEmpty
                                               ? ClipOval(
                                                   child: Image.network(
@@ -8579,29 +8581,13 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                                                       context,
                                                       error,
                                                       stackTrace,
-                                                    ) => imageBytes != null
-                                                        ? Image.memory(
-                                                            imageBytes,
-                                                            width: 112,
-                                                            height: 112,
-                                                            fit: BoxFit.cover,
-                                                          )
-                                                        : Icon(
+                                                    ) => Icon(
                                                             Icons.person,
                                                             size: 65,
                                                             color: isDark
                                                                 ? const Color(0xFF00FF66)
                                                                 : Colors.black54,
                                                           ),
-                                                  ),
-                                                )
-                                              : imageBytes != null
-                                              ? ClipOval(
-                                                  child: Image.memory(
-                                                    imageBytes,
-                                                    width: 112,
-                                                    height: 112,
-                                                    fit: BoxFit.cover,
                                                   ),
                                                 )
                                               : Icon(
