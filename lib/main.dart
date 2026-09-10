@@ -1006,9 +1006,10 @@ String normalizePhoneNumber(String phone) =>
         .replaceAll(RegExp(r'[^0-9+]'), '');
 
 String _phoneSearchKey(String phone) {
-  final normalized = normalizePhoneNumber(phone).replaceFirst(
-    RegExp(r'^\+'),
-  );
+  final normalizedPhone = normalizePhoneNumber(phone);
+  final normalized = normalizedPhone.startsWith('+')
+      ? normalizedPhone.substring(1)
+      : normalizedPhone;
   return normalized.length > 10
       ? normalized.substring(normalized.length - 10)
       : normalized;
