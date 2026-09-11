@@ -2474,12 +2474,14 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> {
   final TextEditingController _contactIdController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
+  final ScrollController _headerScrollController = ScrollController();
   final Set<String> _sendingRequestUids = <String>{};
 
   @override
   void dispose() {
     _contactIdController.dispose();
     _nameController.dispose();
+    _headerScrollController.dispose();
     super.dispose();
   }
 
@@ -2741,14 +2743,32 @@ class _ContactsScreenState extends State<ContactsScreen> {
         }
         return;
       }
+      final resolvedDisplayName = name.isEmpty
+          ? (matchingUsers.docs.first.data()['displayName'] as String? ??
+              'جهة اتصال')
+          : name;
+      final resolvedPublicId =
+          matchingUsers.docs.first.data()['publicId'] as String? ?? targetUid;
+      if (widget.scope != ContactScope.regular) {
+        await _saveContactRelationship(
+          targetUid: targetUid,
+          displayName: resolvedDisplayName,
+          publicId: resolvedPublicId,
+          status: 'accepted',
+        );
+        _contactIdController.clear();
+        _nameController.clear();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('تمت إضافة العضو بنجاح')),
+          );
+        }
+        return;
+      }
       await _saveContactRelationship(
         targetUid: targetUid,
-        displayName: name.isEmpty
-            ? (matchingUsers.docs.first.data()['displayName'] as String? ??
-                'جهة اتصال')
-            : name,
-        publicId: matchingUsers.docs.first.data()['publicId'] as String? ??
-            targetUid,
+        displayName: resolvedDisplayName,
+        publicId: resolvedPublicId,
         status: 'pending',
       );
 
@@ -2815,6 +2835,24 @@ class _ContactsScreenState extends State<ContactsScreen> {
     setState(() => _sendingRequestUids.add(targetUid));
 
     try {
+      if (widget.scope != ContactScope.regular) {
+        await _saveContactRelationship(
+          targetUid: targetUid,
+          displayName: displayName.isEmpty ? publicId : displayName,
+          publicId: publicId,
+          status: 'accepted',
+        );
+        if (mounted) {
+          final sectionName = widget.scope == ContactScope.group
+              ? 'المجموعة'
+              : 'الغرفة';
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('تمت إضافة $displayName إلى $sectionName')),
+          );
+        }
+        return;
+      }
+
       final myExisting = await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
@@ -2918,9 +2956,19 @@ class _ContactsScreenState extends State<ContactsScreen> {
         ),
         body: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
+            Flexible(
+              fit: FlexFit.loose,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.52,
+                ),
+                child: Scrollbar(
+                  controller: _headerScrollController,
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    controller: _headerScrollController,
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
                 children: [
                   if (user != null)
                     ValueListenableBuilder<String?>(
@@ -2993,7 +3041,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                                 displayName,
                                               ),
                                       icon: const Icon(Icons.person_add_alt_1, size: 18),
-                                      label: Text(isSending ? 'جارٍ الإرسال...' : 'إرسال طلب'),
+                                      label: Text(
+                                        isSending
+                                            ? 'جارٍ الإرسال...'
+                                            : widget.scope == ContactScope.regular
+                                            ? 'إرسال طلب'
+                                            : 'إضافة الآن',
+                                      ),
                                     ),
                                   ],
                                 );
@@ -3029,7 +3083,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                       label: Text(
                         widget.scope == ContactScope.regular
                             ? 'إرسال طلب'
-                            : 'حفظ جهة الاتصال',
+                            : 'إضافة عضو',
                       ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF38E8A5),
@@ -3037,7 +3091,24 @@ class _ContactsScreenState extends State<ContactsScreen> {
                       ),
                     ),
                   ),
+                  Align(
+                    alignment: Alignment.center,
+                    child: TextButton.icon(
+                      onPressed: () {
+                        _headerScrollController.animateTo(
+                          _headerScrollController.position.maxScrollExtent,
+                          duration: const Duration(milliseconds: 350),
+                          curve: Curves.easeOut,
+                        );
+                      },
+                      icon: const Icon(Icons.keyboard_arrow_down),
+                      label: const Text('نزّل الصفحة لعرض المزيد'),
+                    ),
+                  ),
                 ],
+                    ),
+                  ),
+                ),
               ),
             ),
             Expanded(
