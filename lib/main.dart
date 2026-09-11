@@ -2474,6 +2474,7 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> {
   final TextEditingController _contactIdController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
+  final Set<String> _sendingRequestUids = <String>{};
 
   @override
   void dispose() {
@@ -2810,6 +2811,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
       }
       return;
     }
+    if (_sendingRequestUids.contains(targetUid)) return;
+    setState(() => _sendingRequestUids.add(targetUid));
 
     try {
       final myExisting = await FirebaseFirestore.instance
@@ -2885,6 +2888,8 @@ class _ContactsScreenState extends State<ContactsScreen> {
           const SnackBar(content: Text('تعذر إرسال طلب الموافقة')),
         );
       }
+    } finally {
+      if (mounted) setState(() => _sendingRequestUids.remove(targetUid));
     }
   }
 
@@ -2970,6 +2975,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                 final data = doc.data();
                                 final publicId = (data['publicId'] as String?) ?? doc.id;
                                 final displayName = (data['displayName'] as String?) ?? 'مستخدم';
+                                final isSending = _sendingRequestUids.contains(doc.id);
                                 return Row(
                                   children: [
                                     Expanded(
@@ -2978,10 +2984,16 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                         style: const TextStyle(color: Colors.white70),
                                       ),
                                     ),
-                                    TextButton.icon(
-                                      onPressed: () => _addAppUserByTap(doc.id, publicId, displayName),
+                                    FilledButton.icon(
+                                      onPressed: isSending
+                                          ? null
+                                          : () => _addAppUserByTap(
+                                                doc.id,
+                                                publicId,
+                                                displayName,
+                                              ),
                                       icon: const Icon(Icons.person_add_alt_1, size: 18),
-                                      label: const Text('إرسال طلب'),
+                                      label: Text(isSending ? 'جارٍ الإرسال...' : 'إرسال طلب'),
                                     ),
                                   ],
                                 );
@@ -3076,6 +3088,20 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                 style: const TextStyle(color: Colors.white54),
                               ),
                               onTap: () {
+                                final status = data['status'] as String? ?? 'accepted';
+                                if (widget.scope == ContactScope.regular &&
+                                    status != 'accepted') {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        status == 'incoming'
+                                            ? 'اقبل طلب الاتصال أولًا لفتح الدردشة'
+                                            : 'انتظر موافقة الطرف الآخر لفتح الدردشة',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
@@ -6507,6 +6533,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   bool _isOtherTyping = false;
   bool _hasLoadedMessages = false;
   bool _chatLocked = false;
+  bool _directAccessChecked = false;
+  bool _directAccessApproved = true;
   String? _chatPassword;
   final TextEditingController _chatPasswordController = TextEditingController();
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
@@ -6606,10 +6634,28 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _ensureDirectChatAccess() async {
-    if (widget.contactUid == null || widget.contactUid!.isEmpty) return;
-    if (await _hasApprovedDirectContact(widget.contactUid!)) return;
+    final contactUid = widget.contactUid;
+    if (contactUid == null || contactUid.isEmpty) {
+      if (mounted) setState(() => _directAccessChecked = true);
+      return;
+    }
+    final approved = await _hasApprovedDirectContact(contactUid);
+    if (approved) {
+      if (mounted) {
+        setState(() {
+          _directAccessApproved = true;
+          _directAccessChecked = true;
+        });
+        _listenToChatMessages();
+      }
+      return;
+    }
 
     if (!mounted) return;
+    setState(() {
+      _directAccessApproved = false;
+      _directAccessChecked = true;
+    });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('لا يمكنك الدخول إلى هذه الدردشة إلا بعد موافقة الطرف الآخر'),
@@ -6628,9 +6674,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _chatLocked = _chatPassword != null;
     _loadChatPassword();
     _loadLocalVoiceMessages();
-    _listenToChatMessages();
     if (widget.contactUid != null && widget.contactUid!.isNotEmpty) {
       unawaited(_ensureDirectChatAccess());
+    } else {
+      _directAccessChecked = true;
+      _listenToChatMessages();
     }
     if (!_chatLocked && whaleSoundNotifier.value) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -8084,6 +8132,25 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    if (!_directAccessChecked) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF101716),
+        body: Center(
+          child: CircularProgressIndicator(color: Color(0xFF38E8A5)),
+        ),
+      );
+    }
+    if (!_directAccessApproved) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF101716),
+        body: Center(
+          child: Text(
+            'هذه الدردشة تحتاج موافقة الطرف الآخر أولًا',
+            style: TextStyle(color: Colors.white70),
+          ),
+        ),
+      );
+    }
     if (_chatLocked) return _buildLockedChat();
     const isDark = true;
     return Theme(
