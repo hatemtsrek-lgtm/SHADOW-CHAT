@@ -19,34 +19,106 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(memberId));
     }
 
+    function hasAcceptedContact(otherUserId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)/regularContacts/$(otherUserId)).data.status == 'accepted';
+    }
+
+    function isApprovedDirectChat(chatId) {
+      let chat = get(/databases/$(database)/documents/chats/$(chatId)).data;
+      return signedIn()
+        && chat.chatType == 'direct'
+        && chat.participantA is string
+        && chat.participantB is string
+        && (chat.participantA == request.auth.uid || chat.participantB == request.auth.uid)
+        && hasAcceptedContact(
+          chat.participantA == request.auth.uid
+            ? chat.participantB
+            : chat.participantA
+        );
+    }
+
+    function isDirectChatParticipant(chatId) {
+      let chat = get(/databases/$(database)/documents/chats/$(chatId)).data;
+      return signedIn()
+        && chat.chatType == 'direct'
+        && (chat.participantA == request.auth.uid
+          || chat.participantB == request.auth.uid);
+    }
+
+    function canAccessChat(chatId) {
+      let chat = get(/databases/$(database)/documents/chats/$(chatId)).data;
+      return signedIn()
+        && (chat.chatType != 'direct' || isApprovedDirectChat(chatId));
+    }
+
     match /chats/{chatId}/messages/{messageId} {
-      allow read: if signedIn();
+      allow read: if canAccessChat(chatId);
       allow create: if signedIn()
+        && canAccessChat(chatId)
         && request.resource.data.text is string
         && request.resource.data.text.size() <= 4000
         && request.resource.data.uid == request.auth.uid;
-      allow update: if signedIn()
+      allow update: if canAccessChat(chatId)
         && resource.data.uid == request.auth.uid
         && request.resource.data.uid == resource.data.uid
         && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(['deletedFor']);
-      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+      allow delete: if canAccessChat(chatId)
+        && resource.data.uid == request.auth.uid;
     }
 
     match /chats/{chatId} {
-      allow read, create, update: if signedIn();
-      allow delete: if false;
+      allow read: if canAccessChat(chatId);
+      allow create: if signedIn()
+        && (
+          request.resource.data.chatType != 'direct'
+          || (
+            request.resource.data.participantA is string
+            && request.resource.data.participantB is string
+            && request.resource.data.participantA != request.resource.data.participantB
+            && (request.resource.data.participantA == request.auth.uid
+              || request.resource.data.participantB == request.auth.uid)
+            && hasAcceptedContact(
+              request.resource.data.participantA == request.auth.uid
+                ? request.resource.data.participantB
+                : request.resource.data.participantA
+            )
+          )
+        );
+      allow update: if canAccessChat(chatId);
+      allow delete: if isDirectChatParticipant(chatId);
     }
 
-    match /users/{userId}/contacts/{contactId} {
+    match /users/{userId}/groupContacts/{contactId} {
       allow read, write: if isSelf(userId);
     }
 
-    match /users/{userId}/{contactCollection}/{contactId} {
-      allow read, write: if isSelf(userId)
-        && (contactCollection == 'regularContacts'
-          || contactCollection == 'groupContacts'
-          || contactCollection == 'roomContacts');
+    match /users/{userId}/roomContacts/{contactId} {
+      allow read, write: if isSelf(userId);
+    }
+
+    match /users/{userId}/regularContacts/{contactId} {
+      allow read: if isSelf(userId);
+      allow create: if (isSelf(userId)
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.status == 'pending')
+        || (signedIn()
+          && contactId == request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.status == 'incoming');
+      allow update: if (isSelf(userId)
+          && resource.data.uid == request.auth.uid
+          && ((resource.data.status == 'incoming'
+                && request.resource.data.status in ['accepted', 'rejected'])
+              || (resource.data.status == 'pending'
+                && request.resource.data.status == 'rejected')))
+        || (signedIn()
+          && resource.data.uid == request.auth.uid
+          && resource.data.status == 'pending'
+          && request.resource.data.status in ['accepted', 'rejected']);
+      allow delete: if isSelf(userId)
+        || (signedIn() && resource.data.uid == request.auth.uid);
     }
 
     match /users/{userId}/security/appLock {

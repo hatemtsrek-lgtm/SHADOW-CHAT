@@ -500,6 +500,86 @@ String directChatDocumentId(String uidA, String uidB) {
   return 'dm_${participants[0]}_${participants[1]}';
 }
 
+Future<bool> _hasApprovedDirectContact(String targetUid) async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (!firebaseReady || user == null || targetUid.isEmpty) return false;
+
+  try {
+    final myDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(targetUid)
+        .get();
+    final otherDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(targetUid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(user.uid)
+        .get();
+
+    return myDoc.data()?['status'] == 'accepted' &&
+        otherDoc.data()?['status'] == 'accepted';
+  } catch (error) {
+    debugPrint('Approved contact check error: $error');
+    return false;
+  }
+}
+
+Future<void> _acceptContactRequest(String contactUid, String displayName) async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (!firebaseReady || user == null || contactUid.isEmpty) return;
+
+  try {
+    final update = {
+      'status': 'accepted',
+      'lastMessage': 'تمت الموافقة على الدردشة',
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(contactUid)
+        .set(update, SetOptions(merge: true));
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(contactUid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(user.uid)
+        .set(update, SetOptions(merge: true));
+  } catch (error) {
+    debugPrint('Accept contact request error for $displayName: $error');
+  }
+}
+
+Future<void> _rejectContactRequest(String contactUid, String displayName) async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (!firebaseReady || user == null || contactUid.isEmpty) return;
+
+  try {
+    final update = {
+      'status': 'rejected',
+      'lastMessage': 'تم رفض طلب الاتصال',
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(contactUid)
+        .set(update, SetOptions(merge: true));
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(contactUid)
+        .collection(contactsCollectionName(ContactScope.regular))
+        .doc(user.uid)
+        .set(update, SetOptions(merge: true));
+  } catch (error) {
+    debugPrint('Reject contact request error for $displayName: $error');
+  }
+}
+
 Future<void> saveChatPassword(String chatName, String password) async {
   final passwordHash = await hashPassword(password);
   chatPasswordsNotifier.value = {
@@ -844,7 +924,7 @@ bool isDuplicateFirebaseInitializationError(Object error) {
 }
 
 Future<SharedPreferences?> getSafeSharedPreferences() async {
-  if (kIsWeb || defaultTargetPlatform == TargetPlatform.linux) {
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.linux) {
     return null;
   }
   return SharedPreferences.getInstance();
@@ -1836,15 +1916,43 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Future<void> _removeChatContact(String contactUid) async {
     final user = FirebaseAuth.instance.currentUser;
     if (!firebaseReady || user == null || contactUid.isEmpty) return;
+
     try {
-      await FirebaseFirestore.instance
+      final firestore = FirebaseFirestore.instance;
+
+      await firestore
           .collection('users')
           .doc(user.uid)
           .collection(contactsCollectionName(ContactScope.regular))
           .doc(contactUid)
           .delete();
+
+      await firestore
+          .collection('users')
+          .doc(contactUid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(user.uid)
+          .delete();
+
+      final directChatId = directChatDocumentId(user.uid, contactUid);
+      final chatRef = firestore.collection('chats').doc(directChatId);
+      final chatSnapshot = await chatRef.get();
+      if (chatSnapshot.exists) {
+        await chatRef.delete();
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تم حذف الدردشة من Firebase')),
+        );
+      }
     } catch (error) {
       debugPrint('Chat contact removal error: $error');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تعذر حذف الدردشة من Firebase')),
+        );
+      }
     }
   }
 
@@ -1946,7 +2054,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           );
                         }
 
-                        final contacts = (snapshot.data?.docs ?? [])
+                        final contacts = (snapshot.data?.docs ??
+                          <QueryDocumentSnapshot<Map<String, dynamic>>>[])
                             .where((doc) => !_isUnknownContact(doc.data()))
                             .toList();
 
@@ -1994,6 +2103,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
                             final contactName = contactData['displayName'] ?? 'مستخدم';
                             final lastMessage = contactData['lastMessage'] ?? 'لا توجد رسائل';
                             final contactUid = contacts[index].id;
+                            final status = (contactData['status'] as String?) ?? 'pending';
+                            final isIncomingRequest = status == 'incoming';
+                            final isPendingRequest = status == 'pending';
 
                             return Dismissible(
                               key: ValueKey('chat-$contactUid'),
@@ -2020,55 +2132,157 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                   const SnackBar(
                                     content: Text('تمت إزالة الدردشة'),
                                   ),
-                                ),
+                                  );
                               },
-                              child: ListTile(
-                                leading: CircleAvatar(
-                                  radius: 28,
-                                  backgroundColor: const Color(0xFF00FF66).withOpacity(0.2),
-                                  child: Text(
-                                    contactName.toString().isNotEmpty
-                                        ? contactName.toString()[0]
-                                        : 'م',
-                                    style: const TextStyle(
-                                      color: Color(0xFF00FF66),
-                                      fontSize: 20,
-                                      fontWeight: FontWeight.bold,
+                              child: Container(
+                                margin: const EdgeInsets.symmetric(vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF0E1716).withOpacity(0.9),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: const Color(0xFF1B2D2A),
+                                    width: 1,
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: const Color(0xFF00FF66).withOpacity(0.06),
+                                      blurRadius: 18,
+                                      spreadRadius: 1,
                                     ),
+                                  ],
+                                ),
+                                child: ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 8,
                                   ),
-                                ),
-                                title: Text(
-                                  contactName.toString(),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                subtitle: Text(
-                                  lastMessage.toString(),
-                                  style: const TextStyle(color: Colors.white70),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: IconButton(
-                                  icon: const Icon(
-                                    Icons.delete_outline,
-                                    color: Colors.redAccent,
-                                  ),
-                                  tooltip: 'إزالة الدردشة',
-                                  onPressed: () => _removeChatContact(contactUid),
-                                ),
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => ChatScreen(
-                                        chatName: contactName.toString(),
-                                        contactUid: contactUid,
+                                  leading: CircleAvatar(
+                                    radius: 26,
+                                    backgroundColor: const Color(0xFF0F2724),
+                                    foregroundColor: const Color(0xFFB7FFD8),
+                                    child: Text(
+                                      contactName.toString().isNotEmpty
+                                          ? contactName.toString()[0]
+                                          : 'م',
+                                      style: const TextStyle(
+                                        color: Color(0xFFB7FFD8),
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
                                       ),
                                     ),
-                                  );
-                                },
+                                  ),
+                                  title: Text(
+                                    contactName.toString(),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    isIncomingRequest
+                                        ? 'طلب اتصال جديد — يحتاج موافقة'
+                                        : (isPendingRequest
+                                            ? 'طلب تم إرساله — ينتظر الموافقة'
+                                            : lastMessage.toString()),
+                                    style: TextStyle(
+                                      color: isIncomingRequest
+                                          ? const Color(0xFFB7FFD8)
+                                          : Colors.white70,
+                                      fontSize: 12,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (isIncomingRequest || isPendingRequest)
+                                        Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            if (isIncomingRequest)
+                                              Container(
+                                              height: 32,
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFF00FF66).withOpacity(0.15),
+                                                borderRadius: BorderRadius.circular(10),
+                                                border: Border.all(
+                                                  color: const Color(0xFF00FF66).withOpacity(0.35),
+                                                  width: 1,
+                                                ),
+                                              ),
+                                              child: IconButton(
+                                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                                constraints: const BoxConstraints(),
+                                                icon: const Icon(Icons.check, color: Color(0xFF9BF7C8)),
+                                                tooltip: 'قبول',
+                                                onPressed: () => _acceptContactRequest(
+                                                  contactUid,
+                                                  contactName.toString(),
+                                                ),
+                                              ),
+                                            ),
+                                            if (isIncomingRequest) const SizedBox(width: 8),
+                                            Container(
+                                              height: 32,
+                                              decoration: BoxDecoration(
+                                                color: Colors.redAccent.withOpacity(0.12),
+                                                borderRadius: BorderRadius.circular(10),
+                                                border: Border.all(
+                                                  color: Colors.redAccent.withOpacity(0.28),
+                                                  width: 1,
+                                                ),
+                                              ),
+                                              child: IconButton(
+                                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                                constraints: const BoxConstraints(),
+                                                icon: const Icon(Icons.close, color: Colors.redAccent),
+                                                tooltip: isPendingRequest ? 'إلغاء الطلب' : 'رفض الطلب',
+                                                onPressed: () => _rejectContactRequest(
+                                                  contactUid,
+                                                  contactName.toString(),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                          ],
+                                        ),
+                                      Container(
+                                        height: 32,
+                                        decoration: BoxDecoration(
+                                          color: Colors.redAccent.withOpacity(0.12),
+                                          borderRadius: BorderRadius.circular(10),
+                                          border: Border.all(
+                                            color: Colors.redAccent.withOpacity(0.28),
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: IconButton(
+                                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                                          constraints: const BoxConstraints(),
+                                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                                          tooltip: 'حذف الدردشة',
+                                          onPressed: () => _removeChatContact(contactUid),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  onTap: () {
+                                    if (isIncomingRequest || isPendingRequest) {
+                                      return;
+                                    }
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => ChatScreen(
+                                          chatName: contactName.toString(),
+                                          contactUid: contactUid,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
                               ),
                             );
                           },
@@ -2260,11 +2474,14 @@ class ContactsScreen extends StatefulWidget {
 class _ContactsScreenState extends State<ContactsScreen> {
   final TextEditingController _contactIdController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
+  final ScrollController _headerScrollController = ScrollController();
+  final Set<String> _sendingRequestUids = <String>{};
 
   @override
   void dispose() {
     _contactIdController.dispose();
     _nameController.dispose();
+    _headerScrollController.dispose();
     super.dispose();
   }
 
@@ -2305,6 +2522,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
     required String targetUid,
     required String displayName,
     required String publicId,
+    String status = 'accepted',
   }) async {
     final user = FirebaseAuth.instance.currentUser;
     if (targetUid.isEmpty) return;
@@ -2318,20 +2536,23 @@ class _ContactsScreenState extends State<ContactsScreen> {
       return;
     }
 
+    final contactData = {
+      'contactId': publicId,
+      'uid': targetUid,
+      'displayName': displayName.isEmpty ? 'جهة اتصال' : displayName,
+      'lastMessage': status == 'pending' ? 'طلب اتصال في انتظار الموافقة' : 'لا توجد رسائل',
+      'name': displayName.isEmpty ? 'جهة اتصال' : displayName,
+      'status': status,
+      'updatedAt': FieldValue.serverTimestamp(),
+      'createdAt': FieldValue.serverTimestamp(),
+    };
+
     await FirebaseFirestore.instance
         .collection('users')
         .doc(user.uid)
         .collection(contactsCollectionName(widget.scope))
         .doc(targetUid)
-        .set({
-          'contactId': publicId,
-          'uid': targetUid,
-          'displayName': displayName.isEmpty ? 'جهة اتصال' : displayName,
-          'lastMessage': 'لا توجد رسائل',
-          'name': displayName.isEmpty ? 'جهة اتصال' : displayName,
-          'updatedAt': FieldValue.serverTimestamp(),
-          'createdAt': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
+        .set(contactData, SetOptions(merge: true));
 
     if (widget.scope != ContactScope.regular) {
       final roomId = widget.scope == ContactScope.group
@@ -2347,6 +2568,117 @@ class _ContactsScreenState extends State<ContactsScreen> {
             'addedBy': user.uid,
             'addedAt': FieldValue.serverTimestamp(),
           }, SetOptions(merge: true));
+    }
+  }
+
+  Future<bool> _hasApprovedDirectContact(String targetUid) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (!firebaseReady || user == null || targetUid.isEmpty) return false;
+
+    try {
+      final myDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(targetUid)
+          .get();
+      final otherDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(targetUid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(user.uid)
+          .get();
+
+      final myStatus = (myDoc.data()?['status'] as String?) ?? 'none';
+      final otherStatus = (otherDoc.data()?['status'] as String?) ?? 'none';
+      return myStatus == 'accepted' && otherStatus == 'accepted';
+    } catch (error) {
+      debugPrint('Approved contact check error: $error');
+      return false;
+    }
+  }
+
+  Future<void> _acceptContactRequest(String contactUid, String displayName) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (!firebaseReady || user == null || contactUid.isEmpty) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(contactUid)
+          .set({
+            'status': 'accepted',
+            'lastMessage': 'تمت الموافقة على الدردشة',
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(contactUid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(user.uid)
+          .set({
+            'status': 'accepted',
+            'lastMessage': 'تمت الموافقة على الدردشة',
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تمت الموافقة على $displayName')),
+        );
+      }
+    } catch (error) {
+      debugPrint('Accept contact request error: $error');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تعذر قبول طلب الموافقة')),
+        );
+      }
+    }
+  }
+
+  Future<void> _rejectContactRequest(String contactUid, String displayName) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (!firebaseReady || user == null || contactUid.isEmpty) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(contactUid)
+          .set({
+            'status': 'rejected',
+            'lastMessage': 'تم رفض طلب الاتصال',
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(contactUid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(user.uid)
+          .set({
+            'status': 'rejected',
+            'lastMessage': 'تم رفض طلب الاتصال',
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم رفض طلب $displayName')),
+        );
+      }
+    } catch (error) {
+      debugPrint('Reject contact request error: $error');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تعذر رفض طلب الموافقة')),
+        );
+      }
     }
   }
 
@@ -2411,21 +2743,56 @@ class _ContactsScreenState extends State<ContactsScreen> {
         }
         return;
       }
+      final resolvedDisplayName = name.isEmpty
+          ? (matchingUsers.docs.first.data()['displayName'] as String? ??
+              'جهة اتصال')
+          : name;
+      final resolvedPublicId =
+          matchingUsers.docs.first.data()['publicId'] as String? ?? targetUid;
+      if (widget.scope != ContactScope.regular) {
+        await _saveContactRelationship(
+          targetUid: targetUid,
+          displayName: resolvedDisplayName,
+          publicId: resolvedPublicId,
+          status: 'accepted',
+        );
+        _contactIdController.clear();
+        _nameController.clear();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('تمت إضافة العضو بنجاح')),
+          );
+        }
+        return;
+      }
       await _saveContactRelationship(
         targetUid: targetUid,
-        displayName: name.isEmpty
-            ? (matchingUsers.docs.first.data()['displayName'] as String? ??
-                'جهة اتصال')
-            : name,
-        publicId: matchingUsers.docs.first.data()['publicId'] as String? ??
-            targetUid,
+        displayName: resolvedDisplayName,
+        publicId: resolvedPublicId,
+        status: 'pending',
       );
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(targetUid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(user.uid)
+          .set({
+            'contactId': user.uid,
+            'uid': user.uid,
+            'displayName': user.displayName ?? 'مستخدم',
+            'name': user.displayName ?? 'مستخدم',
+            'lastMessage': 'طلب اتصال جديد',
+            'status': 'incoming',
+            'updatedAt': FieldValue.serverTimestamp(),
+            'createdAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
 
       _contactIdController.clear();
       _nameController.clear();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تمت إضافة جهة الاتصال وحفظها')),
+          const SnackBar(content: Text('تم إرسال طلب الموافقة إلى جهة الاتصال')),
         );
       }
     } catch (error) {
@@ -2464,15 +2831,103 @@ class _ContactsScreenState extends State<ContactsScreen> {
       }
       return;
     }
-    await _saveContactRelationship(
-      targetUid: targetUid,
-      displayName: displayName.isEmpty ? publicId : displayName,
-      publicId: publicId,
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('تمت إضافة $displayName بنقرة واحدة')),
+    if (_sendingRequestUids.contains(targetUid)) return;
+    setState(() => _sendingRequestUids.add(targetUid));
+
+    try {
+      if (widget.scope != ContactScope.regular) {
+        await _saveContactRelationship(
+          targetUid: targetUid,
+          displayName: displayName.isEmpty ? publicId : displayName,
+          publicId: publicId,
+          status: 'accepted',
+        );
+        if (mounted) {
+          final sectionName = widget.scope == ContactScope.group
+              ? 'المجموعة'
+              : 'الغرفة';
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('تمت إضافة $displayName إلى $sectionName')),
+          );
+        }
+        return;
+      }
+
+      final myExisting = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(targetUid)
+          .get();
+      final myStatus = (myExisting.data()?['status'] as String?) ?? 'none';
+      if (myStatus == 'accepted') {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('أنت بالفعل لديك صلاحية الدردشة مع $displayName')),
+          );
+        }
+        return;
+      }
+
+      final otherExisting = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(targetUid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(user.uid)
+          .get();
+      final otherStatus = (otherExisting.data()?['status'] as String?) ?? 'none';
+      if (otherStatus == 'accepted') {
+        await _saveContactRelationship(
+          targetUid: targetUid,
+          displayName: displayName.isEmpty ? publicId : displayName,
+          publicId: publicId,
+          status: 'accepted',
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('تمت موافقة الطرف الآخر تلقائيًا مع $displayName')),
+          );
+        }
+        return;
+      }
+
+      await _saveContactRelationship(
+        targetUid: targetUid,
+        displayName: displayName.isEmpty ? publicId : displayName,
+        publicId: publicId,
+        status: 'pending',
       );
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(targetUid)
+          .collection(contactsCollectionName(ContactScope.regular))
+          .doc(user.uid)
+          .set({
+            'contactId': user.uid,
+            'uid': user.uid,
+            'displayName': user.displayName ?? 'مستخدم',
+            'name': user.displayName ?? 'مستخدم',
+            'lastMessage': 'طلب اتصال جديد',
+            'status': 'incoming',
+            'updatedAt': FieldValue.serverTimestamp(),
+            'createdAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم إرسال طلب الموافقة إلى $displayName')),
+        );
+      }
+    } catch (error) {
+      debugPrint('One-tap add request error: $error');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تعذر إرسال طلب الموافقة')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sendingRequestUids.remove(targetUid));
     }
   }
 
@@ -2501,9 +2956,19 @@ class _ContactsScreenState extends State<ContactsScreen> {
         ),
         body: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
+            Flexible(
+              fit: FlexFit.loose,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.52,
+                ),
+                child: Scrollbar(
+                  controller: _headerScrollController,
+                  thumbVisibility: true,
+                  child: SingleChildScrollView(
+                    controller: _headerScrollController,
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
                 children: [
                   if (user != null)
                     ValueListenableBuilder<String?>(
@@ -2558,6 +3023,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                 final data = doc.data();
                                 final publicId = (data['publicId'] as String?) ?? doc.id;
                                 final displayName = (data['displayName'] as String?) ?? 'مستخدم';
+                                final isSending = _sendingRequestUids.contains(doc.id);
                                 return Row(
                                   children: [
                                     Expanded(
@@ -2566,10 +3032,22 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                         style: const TextStyle(color: Colors.white70),
                                       ),
                                     ),
-                                    TextButton.icon(
-                                      onPressed: () => _addAppUserByTap(doc.id, publicId, displayName),
+                                    FilledButton.icon(
+                                      onPressed: isSending
+                                          ? null
+                                          : () => _addAppUserByTap(
+                                                doc.id,
+                                                publicId,
+                                                displayName,
+                                              ),
                                       icon: const Icon(Icons.person_add_alt_1, size: 18),
-                                      label: const Text('إضافة'),
+                                      label: Text(
+                                        isSending
+                                            ? 'جارٍ الإرسال...'
+                                            : widget.scope == ContactScope.regular
+                                            ? 'إرسال طلب'
+                                            : 'إضافة الآن',
+                                      ),
                                     ),
                                   ],
                                 );
@@ -2602,14 +3080,35 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     child: ElevatedButton.icon(
                       onPressed: _addContact,
                       icon: const Icon(Icons.person_add_alt_1),
-                      label: const Text('حفظ جهة الاتصال'),
+                      label: Text(
+                        widget.scope == ContactScope.regular
+                            ? 'إرسال طلب'
+                            : 'إضافة عضو',
+                      ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF38E8A5),
                         foregroundColor: Colors.black,
                       ),
                     ),
                   ),
+                  Align(
+                    alignment: Alignment.center,
+                    child: TextButton.icon(
+                      onPressed: () {
+                        _headerScrollController.animateTo(
+                          _headerScrollController.position.maxScrollExtent,
+                          duration: const Duration(milliseconds: 350),
+                          curve: Curves.easeOut,
+                        );
+                      },
+                      icon: const Icon(Icons.keyboard_arrow_down),
+                      label: const Text('نزّل الصفحة لعرض المزيد'),
+                    ),
+                  ),
                 ],
+                    ),
+                  ),
+                ),
               ),
             ),
             Expanded(
@@ -2660,6 +3159,20 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                 style: const TextStyle(color: Colors.white54),
                               ),
                               onTap: () {
+                                final status = data['status'] as String? ?? 'pending';
+                                if (widget.scope == ContactScope.regular &&
+                                    status != 'accepted') {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        status == 'incoming'
+                                            ? 'اقبل طلب الاتصال أولًا لفتح الدردشة'
+                                            : 'انتظر موافقة الطرف الآخر لفتح الدردشة',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
                                 Navigator.push(
                                   context,
                                   MaterialPageRoute(
@@ -6091,6 +6604,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   bool _isOtherTyping = false;
   bool _hasLoadedMessages = false;
   bool _chatLocked = false;
+  bool _directAccessChecked = false;
+  bool _directAccessApproved = true;
   String? _chatPassword;
   final TextEditingController _chatPasswordController = TextEditingController();
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
@@ -6189,6 +6704,37 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  Future<void> _ensureDirectChatAccess() async {
+    final contactUid = widget.contactUid;
+    if (contactUid == null || contactUid.isEmpty) {
+      if (mounted) setState(() => _directAccessChecked = true);
+      return;
+    }
+    final approved = await _hasApprovedDirectContact(contactUid);
+    if (approved) {
+      if (mounted) {
+        setState(() {
+          _directAccessApproved = true;
+          _directAccessChecked = true;
+        });
+        _listenToChatMessages();
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _directAccessApproved = false;
+      _directAccessChecked = true;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('لا يمكنك الدخول إلى هذه الدردشة إلا بعد موافقة الطرف الآخر'),
+      ),
+    );
+    Navigator.of(context).maybePop();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -6199,7 +6745,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _chatLocked = _chatPassword != null;
     _loadChatPassword();
     _loadLocalVoiceMessages();
-    _listenToChatMessages();
+    if (widget.contactUid != null && widget.contactUid!.isNotEmpty) {
+      unawaited(_ensureDirectChatAccess());
+    } else {
+      _directAccessChecked = true;
+      _listenToChatMessages();
+    }
     if (!_chatLocked && whaleSoundNotifier.value) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && !_chatLocked) unawaited(_playWhaleSound());
@@ -6414,11 +6965,31 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
+    if (widget.contactUid != null && widget.contactUid!.isNotEmpty) {
+      final isApproved = await _hasApprovedDirectContact(widget.contactUid!);
+      if (!isApproved) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('لا يمكنك إرسال رسالة إلا بعد موافقة الطرف الآخر'),
+            ),
+          );
+        }
+        return;
+      }
+    }
+
     try {
       final chatRef = FirebaseFirestore.instance
           .collection('chats')
           .doc(_chatId);
       await chatRef.set({
+        'participantA': widget.contactUid == null
+          ? user.uid
+          : ([user.uid, widget.contactUid!]..sort())[0],
+        'participantB': widget.contactUid == null
+          ? user.uid
+          : ([user.uid, widget.contactUid!]..sort())[1],
         'participants':
             widget.contactUid == null
                   ? [user.uid]
@@ -6600,7 +7171,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 return;
               }
               try {
-                await saveChatPassword(widget.chatName, newPassword);
+                await saveChatPassword(_chatId, newPassword);
                 final newHash = await hashPassword(newPassword);
                 if (mounted) {
                   setState(() => _chatPassword = newHash);
@@ -6627,6 +7198,71 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     confirmController.dispose();
   }
 
+  Future<void> _setChatPasswordForCurrentChat() async {
+    final passwordController = TextEditingController();
+    final confirmController = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('تأمين هذه الدردشة'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: passwordController,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'كلمة السر الجديدة'),
+            ),
+            TextField(
+              controller: confirmController,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: 'تأكيد كلمة السر'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newPassword = passwordController.text.trim();
+              final confirmed = confirmController.text.trim();
+              if (newPassword.length < 4 || newPassword != confirmed) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('كلمة المرور غير متطابقة أو قصيرة')),
+                );
+                return;
+              }
+              try {
+                await saveChatPassword(_chatId, newPassword);
+                final newHash = await hashPassword(newPassword);
+                if (mounted) {
+                  setState(() {
+                    _chatPassword = newHash;
+                    _chatLocked = false;
+                  });
+                }
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+              } catch (error) {
+                debugPrint('Chat password set error: $error');
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('تعذر تأمين الدردشة')),
+                  );
+                }
+              }
+            },
+            child: const Text('تأمين'),
+          ),
+        ],
+      ),
+    );
+    passwordController.dispose();
+    confirmController.dispose();
+  }
+
   Future<void> _disableChatPassword() async {
     final enteredHash = await hashPassword(_chatPasswordController.text.trim());
     if (enteredHash != _chatPassword) {
@@ -6642,7 +7278,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         _chatPasswordController.clear();
       });
     }
-    unawaited(disableChatPassword(widget.chatName));
+    unawaited(disableChatPassword(_chatId));
   }
 
   Future<void> _toggleVoiceRecording() async {
@@ -6870,6 +7506,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           .doc(_chatId);
       
       await chatRef.set({
+        'participantA': widget.contactUid == null
+          ? user.uid
+          : ([user.uid, widget.contactUid!]..sort())[0],
+        'participantB': widget.contactUid == null
+          ? user.uid
+          : ([user.uid, widget.contactUid!]..sort())[1],
         'participants':
             widget.contactUid == null
                   ? [user.uid]
@@ -7561,6 +8203,25 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    if (!_directAccessChecked) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF101716),
+        body: Center(
+          child: CircularProgressIndicator(color: Color(0xFF38E8A5)),
+        ),
+      );
+    }
+    if (!_directAccessApproved) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF101716),
+        body: Center(
+          child: Text(
+            'هذه الدردشة تحتاج موافقة الطرف الآخر أولًا',
+            style: TextStyle(color: Colors.white70),
+          ),
+        ),
+      );
+    }
     if (_chatLocked) return _buildLockedChat();
     const isDark = true;
     return Theme(
@@ -7622,6 +8283,20 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                             ),
                             tooltip: 'رجوع',
                             onPressed: () => Navigator.pop(context),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              _chatPassword == null
+                                  ? Icons.lock_outline_rounded
+                                  : Icons.lock_reset_rounded,
+                              color: const Color(0xFFB7FFD8),
+                            ),
+                            tooltip: _chatPassword == null
+                                ? 'تأمين الدردشة'
+                                : 'تغيير كلمة السر',
+                            onPressed: _chatPassword == null
+                                ? _setChatPasswordForCurrentChat
+                                : _changeChatPassword,
                           ),
                           Expanded(
                             child:
@@ -8023,7 +8698,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
   String userName = "Shadow User";
   late TextEditingController nameController;
   final ImagePicker _picker = ImagePicker();
-  String? _profileImageUrl;
   String? _linkedPhoneNumber;
   bool _isLinkingPhone = false;
 
@@ -8046,13 +8720,13 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
       if (image == null) return;
 
       final bytes = await image.readAsBytes();
+      if (bytes.isEmpty) {
+        throw StateError('Selected profile image is empty');
+      }
       userProfileImageNotifier.value = image;
       userProfileImageBytesNotifier.value = bytes;
       await _saveLocalProfileImage(bytes);
       if (mounted) {
-        setState(() {
-          _profileImageUrl = null;
-        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('تم حفظ الصورة على الجهاز فقط')),
         );
@@ -8069,7 +8743,8 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
 
   Future<void> _saveLocalProfileImage(Uint8List bytes) async {
     try {
-      final preferences = await SharedPreferences.getInstance();
+      final preferences = await getSafeSharedPreferences();
+      if (preferences == null) return;
       final userKey = FirebaseAuth.instance.currentUser?.uid ?? 'guest';
       await preferences.setString(
         'profile_image_base64_$userKey',
@@ -8082,23 +8757,18 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
 
   Future<void> _loadLocalProfileImage() async {
     try {
-      final preferences = await SharedPreferences.getInstance();
+      final preferences = await getSafeSharedPreferences();
+      if (preferences == null) return;
       final userKey = FirebaseAuth.instance.currentUser?.uid ?? 'guest';
       final encodedImage = preferences.getString('profile_image_base64_$userKey');
       if (encodedImage != null && encodedImage.isNotEmpty) {
-        userProfileImageBytesNotifier.value = base64Decode(encodedImage);
+        final bytes = base64Decode(encodedImage);
+        if (bytes.isNotEmpty) {
+          userProfileImageBytesNotifier.value = bytes;
+        }
       }
     } catch (error) {
       debugPrint('Local profile image load error: $error');
-    }
-  }
-
-  Future<void> _uploadProfileImage(XFile image) async {
-    debugPrint('Profile storage is disabled for this build; using local image only.');
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم حفظ الصورة على الجهاز فقط')),
-      );
     }
   }
 
@@ -8121,7 +8791,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
       if (mounted) {
         setState(() {
           userName = data?['displayName'] as String? ?? userName;
-          _profileImageUrl = null;
           _linkedPhoneNumber = refreshedUser.phoneNumber;
           nameController.text = userName;
         });
@@ -8133,7 +8802,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
 
   void _showProfileImageViewer() {
     final imageBytes = userProfileImageBytesNotifier.value;
-    final imageUrl = _profileImageUrl;
 
     showDialog(
       context: context,
@@ -8153,16 +8821,6 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                     ? Image.memory(
                         imageBytes,
                         fit: BoxFit.contain,
-                      )
-                    : imageUrl != null && imageUrl.isNotEmpty
-                    ? Image.network(
-                        imageUrl,
-                        fit: BoxFit.contain,
-                        errorBuilder: (context, error, stackTrace) => const Icon(
-                          Icons.person,
-                          size: 110,
-                          color: Color(0xFF00FF66),
-                        ),
                       )
                     : Container(
                         width: 220,
@@ -8508,9 +9166,7 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                           clipBehavior: Clip.hardEdge,
                           child: InkWell(
                             onTap: () {
-                              if (userProfileImageBytesNotifier.value != null ||
-                                  (_profileImageUrl != null &&
-                                      _profileImageUrl!.isNotEmpty)) {
+                              if (userProfileImageBytesNotifier.value != null) {
                                 _showProfileImageViewer();
                               } else {
                                 _pickProfileImage();
@@ -8540,27 +9196,17 @@ class _AccountAndThemeScreenState extends State<AccountAndThemeScreen> {
                                                     width: 112,
                                                     height: 112,
                                                     fit: BoxFit.cover,
-                                                  ),
-                                                )
-                                              : _profileImageUrl != null &&
-                                                  _profileImageUrl!.isNotEmpty
-                                              ? ClipOval(
-                                                  child: Image.network(
-                                                    _profileImageUrl!,
-                                                    width: 112,
-                                                    height: 112,
-                                                    fit: BoxFit.cover,
-                                                    errorBuilder: (
-                                                      context,
-                                                      error,
-                                                      stackTrace,
-                                                    ) => Icon(
-                                                            Icons.person,
-                                                            size: 65,
-                                                            color: isDark
-                                                                ? const Color(0xFF00FF66)
-                                                                : Colors.black54,
-                                                          ),
+                                                        errorBuilder: (
+                                                          context,
+                                                          error,
+                                                          stackTrace,
+                                                        ) => Icon(
+                                                          Icons.person,
+                                                          size: 65,
+                                                          color: isDark
+                                                              ? const Color(0xFF00FF66)
+                                                              : Colors.black54,
+                                                        ),
                                                   ),
                                                 )
                                               : Icon(
