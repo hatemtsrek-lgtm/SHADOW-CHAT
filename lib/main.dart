@@ -2103,7 +2103,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                             final contactName = contactData['displayName'] ?? 'مستخدم';
                             final lastMessage = contactData['lastMessage'] ?? 'لا توجد رسائل';
                             final contactUid = contacts[index].id;
-                            final status = (contactData['status'] as String?) ?? 'accepted';
+                            final status = (contactData['status'] as String?) ?? 'pending';
                             final isIncomingRequest = status == 'incoming';
                             final isPendingRequest = status == 'pending';
 
@@ -3088,7 +3088,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                                 style: const TextStyle(color: Colors.white54),
                               ),
                               onTap: () {
-                                final status = data['status'] as String? ?? 'accepted';
+                                final status = data['status'] as String? ?? 'pending';
                                 if (widget.scope == ContactScope.regular &&
                                     status != 'accepted') {
                                   ScaffoldMessenger.of(context).showSnackBar(
